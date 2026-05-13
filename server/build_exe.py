@@ -132,6 +132,7 @@ class ServerBuildTool:
                 "--hidden-import=sqlite3",
                 "--hidden-import=json",
                 "--hidden-import=csv",
+                "--hidden-import=openpyxl",
                 "--clean",
                 "app.py"
             ]

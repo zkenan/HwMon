@@ -1,0 +1,871 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>硬件监控系统</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Microsoft YaHei', Arial, sans-serif; background: #f5f7fa; color: #333; }
+        .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px 40px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        .header h1 { font-size: 24px; margin-bottom: 5px; }
+        .header p { opacity: 0.9; font-size: 14px; }
+        .container { max-width: 1500px; margin: 30px auto; padding: 0 20px; }
+        .toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 10px; }
+        .btn { padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; font-size: 14px; transition: all 0.3s; }
+        .btn:disabled { opacity: 0.6; cursor: not-allowed; }
+        .btn-primary { background: #667eea; color: white; }
+        .btn-primary:hover:not(:disabled) { background: #5568d3; }
+        .btn-success { background: #48bb78; color: white; }
+        .btn-success:hover:not(:disabled) { background: #38a169; }
+        .btn-danger { background: #f56565; color: white; }
+        .btn-danger:hover:not(:disabled) { background: #e53e3e; }
+        .btn-warning { background: #ed8936; color: white; }
+        .btn-warning:hover:not(:disabled) { background: #dd6b20; }
+        .btn-secondary { background: #718096; color: white; }
+        .btn-secondary:hover:not(:disabled) { background: #4a5568; }
+        .btn-info { background: #4299e1; color: white; }
+        .btn-info:hover:not(:disabled) { background: #3182ce; }
+        .btn-small { padding: 5px 10px; font-size: 11px; }
+        .btn-icon { padding: 5px 8px; font-size: 14px; min-width: 32px; }
+        .filter-group { display: flex; gap: 10px; align-items: center; }
+        select { padding: 10px 15px; border: 1px solid #ddd; border-radius: 5px; font-size: 14px; min-width: 150px; }
+        .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 30px; }
+        .stat-card { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+        .stat-card h3 { font-size: 14px; color: #718096; margin-bottom: 10px; }
+        .stat-card .value { font-size: 32px; font-weight: bold; color: #667eea; }
+        .card { background: white; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); overflow: hidden; }
+        .card-header { padding: 20px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center; }
+        .card-header h2 { font-size: 18px; }
+        .table-container { overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 12px 15px; text-align: left; border-bottom: 1px solid #eee; white-space: nowrap; }
+        th { background: #f7fafc; font-weight: 600; color: #4a5568; font-size: 13px; }
+        td { font-size: 13px; }
+        tr:hover { background: #f7fafc; }
+        tr.selected { background: #ebf4ff; }
+        .status-online { color: #48bb78; font-weight: bold; }
+        .status-offline { color: #f56565; }
+        .report-scheduled { color: #718096; font-size: 11px; }
+        .report-ondemand { color: #667eea; font-weight: bold; font-size: 11px; }
+        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; justify-content: center; align-items: center; }
+        .modal.active { display: flex; }
+        .modal-content { background: white; border-radius: 10px; max-width: 900px; width: 90%; max-height: 85vh; overflow-y: auto; }
+        .modal-content-lg { max-width: 1100px; }
+        .modal-header { padding: 20px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center; }
+        .modal-header h3 { font-size: 18px; }
+        .modal-close { background: none; border: none; font-size: 24px; cursor: pointer; color: #718096; }
+        .modal-body { padding: 20px; }
+        .hardware-info { line-height: 1.8; }
+        .hardware-info h4 { color: #667eea; margin: 15px 0 10px 0; padding-bottom: 5px; border-bottom: 2px solid #667eea; }
+        .hardware-info p { margin: 5px 0; padding-left: 10px; }
+        .hardware-info .label { font-weight: bold; color: #4a5568; }
+        .form-group { margin-bottom: 15px; }
+        .form-group label { display: block; margin-bottom: 5px; font-weight: 600; }
+        .form-group input, .form-group textarea, .form-group select { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 5px; font-size: 14px; }
+        .form-group textarea { resize: vertical; min-height: 80px; }
+        .loading { text-align: center; padding: 40px; color: #718096; }
+        .empty-state { text-align: center; padding: 60px 20px; color: #718096; }
+        .action-btns { display: flex; gap: 4px; flex-wrap: wrap; }
+        .collect-result { margin-top: 15px; padding: 15px; background: #f7fafc; border-radius: 8px; max-height: 300px; overflow-y: auto; }
+        .collect-result-item { padding: 8px 12px; margin: 5px 0; border-radius: 5px; display: flex; justify-content: space-between; align-items: center; }
+        .collect-success { background: #f0fff4; border-left: 3px solid #48bb78; }
+        .collect-failed { background: #fff5f5; border-left: 3px solid #f56565; }
+        .collect-loading { background: #fffff0; border-left: 3px solid #ed8936; }
+        .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #ed8936; border-top-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite; margin-right: 8px; vertical-align: middle; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .toast { position: fixed; top: 20px; right: 20px; padding: 12px 24px; border-radius: 8px; color: white; z-index: 2000; font-size: 14px; animation: slideIn 0.3s ease; }
+        .toast-success { background: #48bb78; }
+        .toast-error { background: #f56565; }
+        .toast-info { background: #667eea; }
+        @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+        .ip-badge { background: #edf2f7; padding: 2px 8px; border-radius: 10px; font-size: 11px; color: #4a5568; }
+        /* Batch toolbar */
+        .batch-toolbar { display: none; background: #ebf4ff; padding: 10px 15px; border-radius: 8px; margin-bottom: 15px; align-items: center; gap: 10px; flex-wrap: wrap; }
+        .batch-toolbar.active { display: flex; }
+        .batch-toolbar .selected-count { font-weight: bold; color: #667eea; }
+        /* Tabs */
+        .tabs { display: flex; border-bottom: 2px solid #e2e8f0; margin-bottom: 15px; }
+        .tab { padding: 10px 20px; cursor: pointer; border: none; background: none; font-size: 14px; color: #718096; border-bottom: 2px solid transparent; margin-bottom: -2px; }
+        .tab.active { color: #667eea; border-bottom-color: #667eea; font-weight: 600; }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+        /* Group management */
+        .group-item { display: flex; justify-content: space-between; align-items: center; padding: 12px 15px; border: 1px solid #e2e8f0; border-radius: 8px; margin-bottom: 8px; }
+        .group-item:hover { background: #f7fafc; }
+        .group-item .group-info { flex: 1; }
+        .group-item .group-name { font-weight: 600; }
+        .group-item .group-desc { font-size: 12px; color: #718096; }
+        .group-item .group-count { font-size: 12px; color: #667eea; margin-right: 10px; }
+        .group-item .group-actions { display: flex; gap: 5px; }
+        /* History table */
+        .history-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+        .history-table th { background: #667eea; color: white; padding: 8px 10px; }
+        .history-table td { padding: 6px 10px; border-bottom: 1px solid #e2e8f0; }
+        .history-table tr:hover { background: #f7fafc; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>硬件监控系统</h1>
+        <p>实时监控和管理所有客户端硬件信息</p>
+    </div>
+
+    <div class="container">
+        <div class="stats">
+            <div class="stat-card">
+                <h3>总客户端数</h3>
+                <div class="value" id="totalClients">0</div>
+            </div>
+            <div class="stat-card">
+                <h3>分组数量</h3>
+                <div class="value" id="totalGroups">0</div>
+            </div>
+            <div class="stat-card">
+                <h3>在线客户端</h3>
+                <div class="value" id="onlineClients">0</div>
+            </div>
+        </div>
+
+        <div class="toolbar">
+            <div class="filter-group">
+                <select id="groupFilter">
+                    <option value="">全部分组</option>
+                </select>
+                <button class="btn btn-secondary" onclick="loadClients()">刷新</button>
+            </div>
+            <div class="filter-group">
+                <button class="btn btn-warning" onclick="collectAll()" id="btnCollectAll">一键采集</button>
+                <button class="btn btn-secondary" onclick="showGroupManageModal()">分组管理</button>
+                <button class="btn btn-success" onclick="showCreateGroupModal()">新建分组</button>
+                <button class="btn btn-primary" onclick="exportData('excel')">导出Excel</button>
+                <button class="btn btn-primary" onclick="exportData('csv')">导出CSV</button>
+                <button class="btn btn-primary" onclick="exportData('json')">导出JSON</button>
+            </div>
+        </div>
+
+        <!-- 批量操作工具栏 -->
+        <div class="batch-toolbar" id="batchToolbar">
+            <span class="selected-count">已选 <span id="selectedCount">0</span> 项</span>
+            <button class="btn btn-warning btn-small" onclick="batchCollect()">批量采集</button>
+            <button class="btn btn-primary btn-small" onclick="batchExportExcel()">批量导出Excel</button>
+            <button class="btn btn-info btn-small" onclick="showBatchGroupModal()">批量分配分组</button>
+            <button class="btn btn-danger btn-small" onclick="batchDelete()">批量删除</button>
+            <button class="btn btn-secondary btn-small" onclick="clearSelection()">取消选择</button>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                <h2>客户端列表</h2>
+                <span style="font-size:12px;color:#718096;">点击行首复选框选择客户端</span>
+            </div>
+            <div class="table-container">
+                <table>
+                    <thead>
+                        <tr>
+                            <th style="width:40px;"><input type="checkbox" id="selectAll" onchange="toggleSelectAll(this.checked)" title="全选"></th>
+                            <th>主机名</th>
+                            <th>IP地址</th>
+                            <th>分组</th>
+                            <th>上报方式</th>
+                            <th>最后上报时间</th>
+                            <th>状态</th>
+                            <th>操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="clientTableBody">
+                        <tr><td colspan="8" class="loading">加载中...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- 硬件详情模态框 -->
+    <div class="modal" id="detailModal">
+        <div class="modal-content modal-content-lg">
+            <div class="modal-header">
+                <h3 id="modalTitle">硬件详情</h3>
+                <button class="modal-close" onclick="closeModal('detailModal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="tabs">
+                    <button class="tab active" onclick="switchTab(this, 'tabHardware')">硬件信息</button>
+                    <button class="tab" onclick="switchTab(this, 'tabHistory')">历史记录</button>
+                </div>
+                <div class="tab-content active" id="tabHardware"><div class="loading">加载中...</div></div>
+                <div class="tab-content" id="tabHistory"><div class="loading">加载中...</div></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 创建分组模态框 -->
+    <div class="modal" id="createGroupModal">
+        <div class="modal-content" style="max-width: 500px;">
+            <div class="modal-header">
+                <h3>创建新分组</h3>
+                <button class="modal-close" onclick="closeModal('createGroupModal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="createGroupForm">
+                    <div class="form-group"><label>分组名称</label><input type="text" id="groupName" required></div>
+                    <div class="form-group"><label>描述</label><textarea id="groupDescription"></textarea></div>
+                    <button type="submit" class="btn btn-primary">创建</button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- 编辑分组模态框 -->
+    <div class="modal" id="editGroupModal">
+        <div class="modal-content" style="max-width: 500px;">
+            <div class="modal-header">
+                <h3>编辑分组</h3>
+                <button class="modal-close" onclick="closeModal('editGroupModal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="editGroupForm">
+                    <input type="hidden" id="editGroupId">
+                    <div class="form-group"><label>分组名称</label><input type="text" id="editGroupName" required></div>
+                    <div class="form-group"><label>描述</label><textarea id="editGroupDescription"></textarea></div>
+                    <button type="submit" class="btn btn-primary">保存</button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- 分组管理模态框 -->
+    <div class="modal" id="groupManageModal">
+        <div class="modal-content" style="max-width: 600px;">
+            <div class="modal-header">
+                <h3>分组管理</h3>
+                <button class="modal-close" onclick="closeModal('groupManageModal')">&times;</button>
+            </div>
+            <div class="modal-body" id="groupManageBody">
+                <div class="loading">加载中...</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 分配分组模态框 -->
+    <div class="modal" id="assignGroupModal">
+        <div class="modal-content" style="max-width: 500px;">
+            <div class="modal-header">
+                <h3>分配到分组</h3>
+                <button class="modal-close" onclick="closeModal('assignGroupModal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="assignGroupForm">
+                    <div class="form-group"><label>选择分组</label><select id="assignGroupSelect" required></select></div>
+                    <input type="hidden" id="assignClientId">
+                    <button type="submit" class="btn btn-primary">确定</button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- 批量分配分组模态框 -->
+    <div class="modal" id="batchGroupModal">
+        <div class="modal-content" style="max-width: 500px;">
+            <div class="modal-header">
+                <h3>批量分配分组</h3>
+                <button class="modal-close" onclick="closeModal('batchGroupModal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="batchGroupForm">
+                    <p style="margin-bottom:15px;color:#718096;">将 <strong id="batchGroupCount">0</strong> 个客户端分配到：</p>
+                    <div class="form-group"><label>选择分组</label><select id="batchGroupSelect" required></select></div>
+                    <button type="submit" class="btn btn-primary">确定</button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- 一键采集结果模态框 -->
+    <div class="modal" id="collectResultModal">
+        <div class="modal-content" style="max-width: 600px;">
+            <div class="modal-header">
+                <h3>采集结果</h3>
+                <button class="modal-close" onclick="closeModal('collectResultModal')">&times;</button>
+            </div>
+            <div class="modal-body" id="collectResultBody"></div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = '';
+        let selectedClients = new Set();
+
+        // ===== 分组加载 =====
+        async function loadGroups() {
+            try {
+                const response = await fetch(`${API_BASE}/api/groups`);
+                const result = await response.json();
+                if (result.status === 'success') {
+                    const groups = result.data;
+                    document.getElementById('totalGroups').textContent = groups.length;
+                    const filterSelect = document.getElementById('groupFilter');
+                    const currentVal = filterSelect.value;
+                    filterSelect.innerHTML = '<option value="">全部分组</option>';
+                    groups.forEach(g => {
+                        filterSelect.innerHTML += `<option value="${g.id}" ${g.id == currentVal ? 'selected' : ''}>${g.name} (${g.client_count})</option>`;
+                    });
+                    const assignSelect = document.getElementById('assignGroupSelect');
+                    assignSelect.innerHTML = '<option value="">-- 请选择分组 --</option>';
+                    groups.forEach(g => {
+                        assignSelect.innerHTML += `<option value="${g.id}">${g.name}</option>`;
+                    });
+                    const batchSelect = document.getElementById('batchGroupSelect');
+                    batchSelect.innerHTML = '<option value="">-- 请选择分组 --</option>';
+                    groups.forEach(g => {
+                        batchSelect.innerHTML += `<option value="${g.id}">${g.name}</option>`;
+                    });
+                }
+            } catch (error) { console.error('加载分组失败:', error); }
+        }
+
+        // ===== 客户端加载（带复选框） =====
+        async function loadClients() {
+            try {
+                const groupId = document.getElementById('groupFilter').value;
+                const url = groupId ? `${API_BASE}/api/clients?group_id=${groupId}` : `${API_BASE}/api/clients`;
+                const response = await fetch(url);
+                const result = await response.json();
+                if (result.status === 'success') {
+                    const clients = result.data;
+                    document.getElementById('totalClients').textContent = clients.length;
+                    const now = new Date();
+                    const onlineCount = clients.filter(c => {
+                        const diff = (now - new Date(c.last_report)) / (1000*60*60);
+                        return diff < 24;
+                    }).length;
+                    document.getElementById('onlineClients').textContent = onlineCount;
+
+                    const tbody = document.getElementById('clientTableBody');
+                    if (clients.length === 0) {
+                        tbody.innerHTML = '<tr><td colspan="8" class="empty-state"><p>暂无客户端数据</p></td></tr>';
+                        selectedClients.clear();
+                        updateBatchToolbar();
+                        return;
+                    }
+
+                    tbody.innerHTML = clients.map(c => {
+                        const lastReport = new Date(c.last_report);
+                        const diffHours = (now - lastReport) / (1000*60*60);
+                        const isOnline = diffHours < 24;
+                        const checked = selectedClients.has(c.client_id) ? 'checked' : '';
+                        return `<tr class="${checked ? 'selected' : ''}" data-client-id="${c.client_id}">
+                            <td><input type="checkbox" class="client-cb" data-id="${c.client_id}" ${checked} onchange="toggleSelect('${c.client_id}', this.checked, this.closest('tr'))"></td>
+                            <td><strong>${c.client_id}</strong></td>
+                            <td><span class="ip-badge">${c.local_ip || '-'}</span></td>
+                            <td>${c.group_name || '未分组'}</td>
+                            <td id="reportType_${c.client_id.replace(/[^a-zA-Z0-9]/g,'_')}">-</td>
+                            <td>${formatDateTime(c.last_report)}</td>
+                            <td class="${isOnline ? 'status-online' : 'status-offline'}">${isOnline ? '在线' : '离线'}</td>
+                            <td class="action-btns">
+                                <button class="btn btn-warning btn-small" onclick="collectOne('${c.client_id}')" title="主动采集">采集</button>
+                                <button class="btn btn-primary btn-small" onclick="viewDetail('${c.client_id}')">详情</button>
+                                <button class="btn btn-secondary btn-small" onclick="showAssignGroupModal('${c.client_id}')">分组</button>
+                                <button class="btn btn-danger btn-small" onclick="deleteClient('${c.client_id}')">删除</button>
+                            </td>
+                        </tr>`;
+                    }).join('');
+
+                    // 更新全选框状态
+                    updateSelectAllState();
+                    updateBatchToolbar();
+                }
+            } catch (error) { console.error('加载客户端失败:', error); }
+        }
+
+        // ===== 选择相关 =====
+        function toggleSelect(clientId, checked, tr) {
+            if (checked) {
+                selectedClients.add(clientId);
+                if (tr) tr.classList.add('selected');
+            } else {
+                selectedClients.delete(clientId);
+                if (tr) tr.classList.remove('selected');
+            }
+            updateSelectAllState();
+            updateBatchToolbar();
+        }
+
+        function toggleSelectAll(checked) {
+            document.querySelectorAll('.client-cb').forEach(cb => {
+                cb.checked = checked;
+                const tr = cb.closest('tr');
+                if (tr) {
+                    if (checked) { tr.classList.add('selected'); selectedClients.add(cb.dataset.id); }
+                    else { tr.classList.remove('selected'); selectedClients.delete(cb.dataset.id); }
+                }
+            });
+            updateBatchToolbar();
+        }
+
+        function updateSelectAllState() {
+            const allCbs = document.querySelectorAll('.client-cb');
+            const allChecked = allCbs.length > 0 && Array.from(allCbs).every(cb => cb.checked);
+            document.getElementById('selectAll').checked = allChecked;
+        }
+
+        function updateBatchToolbar() {
+            const toolbar = document.getElementById('batchToolbar');
+            const count = selectedClients.size;
+            document.getElementById('selectedCount').textContent = count;
+            if (count > 0) {
+                toolbar.classList.add('active');
+            } else {
+                toolbar.classList.remove('active');
+            }
+        }
+
+        function clearSelection() {
+            selectedClients.clear();
+            document.querySelectorAll('.client-cb').forEach(cb => { cb.checked = false; cb.closest('tr')?.classList.remove('selected'); });
+            document.getElementById('selectAll').checked = false;
+            updateBatchToolbar();
+        }
+
+        // ===== Tab 切换 =====
+        function switchTab(btn, tabId) {
+            btn.closest('.modal-body').querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            btn.classList.add('active');
+            btn.closest('.modal-body').querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+            document.getElementById(tabId).classList.add('active');
+        }
+
+        // ===== 采集 =====
+        async function collectOne(clientId) {
+            showToast(`正在向 ${clientId} 发送采集请求...`, 'info');
+            try {
+                const response = await fetch(`${API_BASE}/api/collect/${clientId}`, {
+                    method: 'POST', headers: {'Content-Type': 'application/json'}
+                });
+                const result = await response.json();
+                if (result.status === 'success') {
+                    showToast(`已向 ${clientId} 发送采集请求`, 'success');
+                } else {
+                    showToast(`采集失败: ${result.message}`, 'error');
+                }
+            } catch (error) { showToast('采集请求失败', 'error'); }
+        }
+
+        async function collectAll() {
+            const btn = document.getElementById('btnCollectAll');
+            btn.disabled = true; btn.textContent = '采集中...';
+            document.getElementById('collectResultBody').innerHTML = '<div class="collect-result"><div class="loading">正在向所有客户端发送采集请求...</div></div>';
+            document.getElementById('collectResultModal').classList.add('active');
+            try {
+                const response = await fetch(`${API_BASE}/api/collect/all`, {
+                    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({})
+                });
+                const result = await response.json();
+                let html = `<div class="collect-result">`;
+                html += `<p style="margin-bottom:10px;font-weight:bold;">总计: ${result.total} | 成功: ${result.success} | 失败: ${result.failed} | 耗时: ${result.elapsed_seconds || 0}秒 | 并发: ${result.concurrency || 50}</p>`;
+                result.results.forEach(r => {
+                    const cls = r.status === 'success' ? 'collect-success' : 'collect-failed';
+                    const icon = r.status === 'success' ? '✓' : '✗';
+                    html += `<div class="collect-result-item ${cls}"><span>${icon} ${r.client_id}</span><span style="color:${r.status === 'success' ? '#48bb78' : '#f56565'}">${r.message}</span></div>`;
+                });
+                html += '</div>';
+                document.getElementById('collectResultBody').innerHTML = html;
+                showToast(`采集完成: ${result.success}成功 / ${result.failed}失败`, result.failed === 0 ? 'success' : 'error');
+                setTimeout(() => loadClients(), 2000);
+            } catch (error) {
+                document.getElementById('collectResultBody').innerHTML = '<div class="collect-result"><p class="collect-failed">采集请求失败</p></div>';
+            }
+            btn.disabled = false; btn.textContent = '一键采集';
+        }
+
+        // ===== 批量采集 =====
+        async function batchCollect() {
+            const ids = Array.from(selectedClients);
+            if (ids.length === 0) { showToast('请先选择客户端', 'error'); return; }
+
+            document.getElementById('collectResultBody').innerHTML = `<div class="collect-result"><div class="loading">正在向 ${ids.length} 个客户端发送采集请求...</div></div>`;
+            document.getElementById('collectResultModal').classList.add('active');
+
+            try {
+                const response = await fetch(`${API_BASE}/api/collect/all`, {
+                    method: 'POST', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({})
+                });
+                const result = await response.json();
+                // 过滤出选中客户端的结果
+                const filteredResults = result.results.filter(r => selectedClients.has(r.client_id));
+                let html = `<div class="collect-result">`;
+                html += `<p style="margin-bottom:10px;font-weight:bold;">总计: ${ids.length} | 成功: ${filteredResults.filter(r=>r.status==='success').length} | 失败: ${filteredResults.filter(r=>r.status!=='success').length}</p>`;
+                filteredResults.forEach(r => {
+                    const cls = r.status === 'success' ? 'collect-success' : 'collect-failed';
+                    const icon = r.status === 'success' ? '✓' : '✗';
+                    html += `<div class="collect-result-item ${cls}"><span>${icon} ${r.client_id}</span><span style="color:${r.status === 'success' ? '#48bb78' : '#f56565'}">${r.message}</span></div>`;
+                });
+                html += '</div>';
+                document.getElementById('collectResultBody').innerHTML = html;
+                showToast(`批量采集完成`, 'success');
+                setTimeout(() => loadClients(), 2000);
+            } catch (error) {
+                document.getElementById('collectResultBody').innerHTML = '<div class="collect-result"><p class="collect-failed">采集请求失败</p></div>';
+            }
+        }
+
+        // ===== 查看详情 =====
+        async function viewDetail(clientId) {
+            try {
+                const response = await fetch(`${API_BASE}/api/client/${clientId}`);
+                const result = await response.json();
+                if (result.status === 'success') {
+                    const data = result.data;
+                    const hardware = data.latest_hardware;
+                    document.getElementById('modalTitle').textContent = `硬件详情 - ${data.hostname || data.client_id}`;
+
+                    // 硬件信息 Tab
+                    let html = '<div class="hardware-info">';
+                    html += `<p><span class="label">客户端ID:</span> ${data.client_id}</p>`;
+                    html += `<p><span class="label">IP地址:</span> ${data.local_ip || '-'}</p>`;
+                    html += `<p><span class="label">分组:</span> ${data.group_name || '未分组'}</p>`;
+                    if (hardware && hardware.system) {
+                        html += '<h4>系统信息</h4>';
+                        html += `<p><span class="label">主机名:</span> ${hardware.system.hostname}</p>`;
+                        html += `<p><span class="label">操作系统:</span> ${hardware.system.os_name}</p>`;
+                        html += `<p><span class="label">版本:</span> ${hardware.system.os_version}</p>`;
+                        html += `<p><span class="label">架构:</span> ${hardware.system.os_architecture}</p>`;
+                    }
+                    if (hardware && hardware.cpu && Array.isArray(hardware.cpu)) {
+                        html += '<h4>CPU信息</h4>';
+                        hardware.cpu.forEach((cpu, i) => {
+                            html += `<p><span class="label">CPU ${i+1}:</span> ${cpu.name} | ${cpu.cores}核${cpu.threads}线程 | ${cpu.max_clock_speed}MHz</p>`;
+                        });
+                    }
+                    if (hardware && hardware.memory) {
+                        html += '<h4>内存信息</h4>';
+                        if (hardware.memory.total_capacity) {
+                            html += `<p><span class="label">总容量:</span> ${(hardware.memory.total_capacity/(1024**3)).toFixed(2)} GB</p>`;
+                        }
+                        if (hardware.memory.modules) {
+                            hardware.memory.modules.forEach((m, i) => {
+                                html += `<p><span class="label">内存条${i+1}:</span> ${(m.capacity/(1024**3)).toFixed(2)}GB ${m.speed||''}MHz ${m.manufacturer||''}</p>`;
+                            });
+                        }
+                    }
+                    if (hardware && hardware.disk && Array.isArray(hardware.disk)) {
+                        html += '<h4>硬盘信息</h4>';
+                        hardware.disk.forEach((d, i) => {
+                            html += `<p><span class="label">硬盘${i+1}:</span> ${d.model} (${(d.size/(1024**3)).toFixed(1)}GB) ${d.serial_number || ''}</p>`;
+                        });
+                    }
+                    if (hardware && hardware.gpu && Array.isArray(hardware.gpu)) {
+                        html += '<h4>显卡信息</h4>';
+                        hardware.gpu.forEach((g, i) => {
+                            html += `<p><span class="label">显卡${i+1}:</span> ${g.name} ${g.adapter_ram ? ((g.adapter_ram/(1024**3)).toFixed(1)+'GB显存') : ''}</p>`;
+                        });
+                    }
+                    if (hardware && hardware.network && Array.isArray(hardware.network)) {
+                        html += '<h4>网络信息</h4>';
+                        hardware.network.forEach((n, i) => {
+                            html += `<p><span class="label">网卡${i+1}:</span> ${n.description||''}</p>`;
+                            html += `<p><span class="label">MAC:</span> ${n.mac_address} | <span class="label">IP:</span> ${(n.ip_addresses||[]).join(', ')}</p>`;
+                        });
+                    }
+                    if (hardware && hardware.motherboard) {
+                        html += '<h4>主板信息</h4>';
+                        html += `<p><span class="label">制造商:</span> ${hardware.motherboard.manufacturer||'-'} | <span class="label">型号:</span> ${hardware.motherboard.product||'-'} | <span class="label">序列号:</span> ${hardware.motherboard.serial_number||'-'}</p>`;
+                    }
+                    if (hardware && hardware.bios) {
+                        html += '<h4>BIOS信息</h4>';
+                        html += `<p><span class="label">制造商:</span> ${hardware.bios.manufacturer||'-'} | <span class="label">版本:</span> ${hardware.bios.version||'-'}</p>`;
+                    }
+                    html += '</div>';
+                    document.getElementById('tabHardware').innerHTML = html;
+
+                    // 重置到硬件信息 Tab
+                    document.querySelectorAll('#detailModal .tab').forEach((t, i) => t.classList.toggle('active', i === 0));
+                    document.getElementById('tabHardware').classList.add('active');
+                    document.getElementById('tabHistory').classList.remove('active');
+
+                    // 加载历史记录 Tab
+                    loadHistory(clientId);
+
+                    document.getElementById('detailModal').classList.add('active');
+                }
+            } catch (error) { console.error('获取详情失败:', error); alert('获取详情失败'); }
+        }
+
+        // ===== 历史记录 =====
+        async function loadHistory(clientId) {
+            const container = document.getElementById('tabHistory');
+            container.innerHTML = '<div class="loading">加载历史记录...</div>';
+            try {
+                const response = await fetch(`${API_BASE}/api/client/${clientId}/history`);
+                const result = await response.json();
+                if (result.status === 'success' && result.data.length > 0) {
+                    let html = `<p style="margin-bottom:10px;color:#718096;">最近 ${result.data.length} 条采集记录</p>`;
+                    html += `<table class="history-table"><thead><tr><th>采集时间</th><th>CPU</th><th>内存</th><th>硬盘</th><th>显卡</th></tr></thead><tbody>`;
+                    result.data.forEach(h => {
+                        const cpuInfo = h.cpu_info ? JSON.parse(h.cpu_info) : [];
+                        const memInfo = h.memory_info ? JSON.parse(h.memory_info) : {};
+                        const diskInfo = h.disk_info ? JSON.parse(h.disk_info) : [];
+                        const gpuInfo = h.gpu_info ? JSON.parse(h.gpu_info) : [];
+
+                        let cpuStr = cpuInfo.length > 0 ? cpuInfo.map(c => c.name || '?').join(', ') : '-';
+                        let memStr = memInfo.total_capacity ? `${(memInfo.total_capacity / (1024**3)).toFixed(1)} GB` : '-';
+                        let diskStr = diskInfo.length > 0 ? diskInfo.map(d => `${d.model||'?'} (${(d.size/(1024**3)).toFixed(0)}GB)`).join(', ') : '-';
+                        let gpuStr = gpuInfo.length > 0 ? gpuInfo.map(g => g.name || '?').join(', ') : '-';
+
+                        html += `<tr>
+                            <td>${formatDateTime(h.timestamp)}</td>
+                            <td title="${cpuInfo.map(c=>JSON.stringify(c)).join('\\n')}">${cpuStr}</td>
+                            <td>${memStr}</td>
+                            <td title="${diskInfo.map(d=>JSON.stringify(d)).join('\\n')}">${diskStr}</td>
+                            <td title="${gpuInfo.map(g=>JSON.stringify(g)).join('\\n')}">${gpuStr}</td>
+                        </tr>`;
+                    });
+                    html += '</tbody></table>';
+                    container.innerHTML = html;
+                } else {
+                    container.innerHTML = '<div class="empty-state"><p>暂无历史记录</p></div>';
+                }
+            } catch (error) {
+                container.innerHTML = '<div class="empty-state"><p>加载历史记录失败</p></div>';
+            }
+        }
+
+        // ===== 分组管理 =====
+        async function showGroupManageModal() {
+            document.getElementById('groupManageModal').classList.add('active');
+            await loadGroupManageList();
+        }
+
+        async function loadGroupManageList() {
+            const container = document.getElementById('groupManageBody');
+            try {
+                const response = await fetch(`${API_BASE}/api/groups`);
+                const result = await response.json();
+                if (result.status === 'success') {
+                    const groups = result.data;
+                    if (groups.length === 0) {
+                        container.innerHTML = '<div class="empty-state"><p>暂无分组</p></div>';
+                        return;
+                    }
+                    let html = '';
+                    groups.forEach(g => {
+                        const isDefault = g.name === '默认分组';
+                        html += `<div class="group-item">
+                            <div class="group-info">
+                                <div class="group-name">${g.name}${isDefault ? ' <span style="color:#718096;font-size:11px;">(默认)</span>' : ''}</div>
+                                <div class="group-desc">${g.description || '无描述'}</div>
+                            </div>
+                            <span class="group-count">${g.client_count} 台设备</span>
+                            <div class="group-actions">
+                                <button class="btn btn-info btn-small" onclick="showEditGroup(${g.id}, '${g.name.replace(/'/g, "\\'")}', '${(g.description||'').replace(/'/g, "\\'")}')" ${isDefault && g.client_count === 0 ? '' : ''}>编辑</button>
+                                ${!isDefault ? `<button class="btn btn-danger btn-small" onclick="deleteGroup(${g.id}, '${g.name.replace(/'/g, "\\'")}', ${g.client_count})">删除</button>` : ''}
+                            </div>
+                        </div>`;
+                    });
+                    container.innerHTML = html;
+                }
+            } catch (error) {
+                container.innerHTML = '<div class="empty-state"><p>加载失败</p></div>';
+            }
+        }
+
+        function showEditGroup(id, name, desc) {
+            document.getElementById('editGroupId').value = id;
+            document.getElementById('editGroupName').value = name;
+            document.getElementById('editGroupDescription').value = desc;
+            document.getElementById('editGroupModal').classList.add('active');
+        }
+
+        async function deleteGroup(groupId, groupName, clientCount) {
+            if (clientCount > 0) {
+                if (!confirm(`分组 "${groupName}" 下有 ${clientCount} 台设备，删除后这些设备将变为未分组状态。确定删除？`)) return;
+            } else {
+                if (!confirm(`确定删除分组 "${groupName}"？`)) return;
+            }
+            try {
+                const res = await fetch(`${API_BASE}/api/groups/${groupId}`, { method: 'DELETE' });
+                const r = await res.json();
+                if (r.status === 'success') {
+                    showToast('删除成功', 'success');
+                    loadGroupManageList();
+                    loadGroups();
+                    loadClients();
+                } else alert(r.error);
+            } catch(e) { alert('删除失败'); }
+        }
+
+        // 编辑分组表单
+        document.getElementById('editGroupForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            try {
+                const id = document.getElementById('editGroupId').value;
+                const res = await fetch(`${API_BASE}/api/groups/${id}`, {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ name: document.getElementById('editGroupName').value, description: document.getElementById('editGroupDescription').value })
+                });
+                const r = await res.json();
+                if (r.status === 'success') {
+                    showToast('修改成功', 'success');
+                    closeModal('editGroupModal');
+                    loadGroupManageList();
+                    loadGroups();
+                    loadClients();
+                } else alert(r.error);
+            } catch(e) { alert('修改失败'); }
+        });
+
+        // ===== 分配分组 =====
+        function showAssignGroupModal(clientId) {
+            document.getElementById('assignClientId').value = clientId;
+            document.getElementById('assignGroupModal').classList.add('active');
+        }
+
+        document.getElementById('assignGroupForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            try {
+                const res = await fetch(`${API_BASE}/api/clients/${document.getElementById('assignClientId').value}/group`, {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ group_id: document.getElementById('assignGroupSelect').value })
+                });
+                const r = await res.json();
+                if (r.status === 'success') {
+                    showToast('分配成功', 'success');
+                    closeModal('assignGroupModal');
+                    loadClients();
+                    loadGroups();
+                } else alert(r.error);
+            } catch(e) { alert('分配失败'); }
+        });
+
+        // ===== 批量分配分组 =====
+        function showBatchGroupModal() {
+            const count = selectedClients.size;
+            if (count === 0) { showToast('请先选择客户端', 'error'); return; }
+            document.getElementById('batchGroupCount').textContent = count;
+            document.getElementById('batchGroupModal').classList.add('active');
+        }
+
+        document.getElementById('batchGroupForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const groupId = document.getElementById('batchGroupSelect').value;
+            if (!groupId) { showToast('请选择分组', 'error'); return; }
+            try {
+                const res = await fetch(`${API_BASE}/api/clients/batch-group`, {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ client_ids: Array.from(selectedClients), group_id: groupId })
+                });
+                const r = await res.json();
+                if (r.status === 'success') {
+                    showToast(r.message, 'success');
+                    closeModal('batchGroupModal');
+                    clearSelection();
+                    loadClients();
+                    loadGroups();
+                } else alert(r.error);
+            } catch(e) { alert('批量分配失败'); }
+        });
+
+        // ===== 批量删除 =====
+        async function batchDelete() {
+            const ids = Array.from(selectedClients);
+            if (ids.length === 0) { showToast('请先选择客户端', 'error'); return; }
+            if (!confirm(`确定删除 ${ids.length} 个客户端及其所有数据？`)) return;
+            try {
+                const res = await fetch(`${API_BASE}/api/clients/batch-delete`, {
+                    method: 'DELETE',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ client_ids: ids })
+                });
+                const r = await res.json();
+                if (r.status === 'success') {
+                    showToast(r.message, 'success');
+                    clearSelection();
+                    loadClients();
+                    loadGroups();
+                } else alert(r.error);
+            } catch(e) { alert('批量删除失败'); }
+        }
+
+        // ===== 批量导出 Excel =====
+        function batchExportExcel() {
+            const ids = Array.from(selectedClients);
+            if (ids.length === 0) { showToast('请先选择客户端', 'error'); return; }
+            window.open(`${API_BASE}/api/export/excel?client_ids=${encodeURIComponent(ids.join(','))}`, '_blank');
+        }
+
+        // ===== 创建分组 =====
+        function showCreateGroupModal() { document.getElementById('createGroupModal').classList.add('active'); }
+
+        document.getElementById('createGroupForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            try {
+                const res = await fetch(`${API_BASE}/api/groups`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ name: document.getElementById('groupName').value, description: document.getElementById('groupDescription').value })
+                });
+                const r = await res.json();
+                if (r.status === 'success') {
+                    showToast('创建成功', 'success');
+                    closeModal('createGroupModal');
+                    document.getElementById('createGroupForm').reset();
+                    loadGroups();
+                    loadClients();
+                } else alert(r.error);
+            } catch(e) { alert('创建失败'); }
+        });
+
+        // ===== 删除客户端 =====
+        async function deleteClient(clientId) {
+            if (!confirm(`确定删除客户端 ${clientId}?`)) return;
+            try {
+                const res = await fetch(`${API_BASE}/api/clients/${clientId}`, { method: 'DELETE' });
+                const r = await res.json();
+                if (r.status === 'success') {
+                    showToast('删除成功', 'success');
+                    selectedClients.delete(clientId);
+                    updateBatchToolbar();
+                    loadClients();
+                    loadGroups();
+                } else alert(r.error);
+            } catch(e) { alert('删除失败'); }
+        }
+
+        // ===== 导出 =====
+        function exportData(format) {
+            const gid = document.getElementById('groupFilter').value;
+            if (format === 'excel') {
+                window.open(gid ? `${API_BASE}/api/export/excel?group_id=${gid}` : `${API_BASE}/api/export/excel`, '_blank');
+            } else {
+                window.open(gid ? `${API_BASE}/api/export/${format}?group_id=${gid}` : `${API_BASE}/api/export/${format}`, '_blank');
+            }
+        }
+
+        // ===== 工具函数 =====
+        function closeModal(id) { document.getElementById(id).classList.remove('active'); }
+        function formatDateTime(s) { return s ? new Date(s).toLocaleString('zh-CN') : '-'; }
+        function showToast(msg, type='info') {
+            const t = document.createElement('div');
+            t.className = `toast toast-${type}`;
+            t.textContent = msg;
+            document.body.appendChild(t);
+            setTimeout(() => t.remove(), 3000);
+        }
+
+        // ===== 初始化 =====
+        document.addEventListener('DOMContentLoaded', () => {
+            loadGroups(); loadClients();
+            document.getElementById('groupFilter').addEventListener('change', loadClients);
+            setInterval(() => { loadClients(); loadGroups(); }, 30000);
+        });
+
+        document.querySelectorAll('.modal').forEach(m => {
+            m.addEventListener('click', (e) => { if (e.target === m) m.classList.remove('active'); });
+        });
+    </script>
+</body>
+</html>

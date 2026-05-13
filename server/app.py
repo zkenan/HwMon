@@ -16,6 +16,8 @@ import csv
 import requests
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from openpyxl import Workbook
+from openpyxl.styles import Font, Alignment, PatternFill
 
 app = Flask(__name__)
 CORS(app)
@@ -82,6 +84,21 @@ def init_db():
         cursor.execute("ALTER TABLE hardware_reports ADD COLUMN report_type TEXT DEFAULT 'scheduled'")
     except:
         pass
+
+    # 创建硬件采集历史表（保留最近10条记录）
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS hardware_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            client_id TEXT NOT NULL,
+            cpu_info TEXT,
+            memory_info TEXT,
+            disk_info TEXT,
+            gpu_info TEXT,
+            snapshot TEXT,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (client_id) REFERENCES clients(client_id) ON DELETE CASCADE
+        )
+    ''')
 
     # 创建默认分组
     cursor.execute('INSERT OR IGNORE INTO groups (name, description) VALUES (?, ?)',
@@ -185,6 +202,29 @@ def receive_report():
             INSERT INTO hardware_reports (client_id, report_data, report_type)
             VALUES (?, ?, ?)
         ''', (client_id, json.dumps(hardware_info, ensure_ascii=False), report_type))
+
+        # 提取关键硬件指标并存入硬件历史表
+        cpu_info = json.dumps(hardware_info.get('cpu', []), ensure_ascii=False) if hardware_info.get('cpu') else ''
+        mem_info = json.dumps(hardware_info.get('memory', {}), ensure_ascii=False) if hardware_info.get('memory') else ''
+        disk_info = json.dumps(hardware_info.get('disk', []), ensure_ascii=False) if hardware_info.get('disk') else ''
+        gpu_info = json.dumps(hardware_info.get('gpu', []), ensure_ascii=False) if hardware_info.get('gpu') else ''
+
+        cursor.execute('''
+            INSERT INTO hardware_history (client_id, cpu_info, memory_info, disk_info, gpu_info, snapshot)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (client_id, cpu_info, mem_info, disk_info, gpu_info, json.dumps(hardware_info, ensure_ascii=False)))
+
+        # 清理历史记录，只保留最近10条
+        cursor.execute('''
+            DELETE FROM hardware_history
+            WHERE id NOT IN (
+                SELECT id FROM hardware_history
+                WHERE client_id = ?
+                ORDER BY timestamp DESC
+                LIMIT 10
+            )
+            AND client_id = ?
+        ''', (client_id, client_id))
 
         conn.commit()
         conn.close()
@@ -645,6 +685,254 @@ def export_json():
             as_attachment=True,
             download_name=f'hardware_report_{datetime.now().strftime("%Y%m%d_%H%M%S")}.json'
         )
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/export/excel', methods=['GET'])
+def export_excel():
+    """导出客户端硬件信息为Excel文件"""
+    try:
+        group_id = request.args.get('group_id')
+        client_ids_param = request.args.get('client_ids')  # 逗号分隔的client_id列表
+
+        conn = get_db()
+        cursor = conn.cursor()
+
+        # 构建查询
+        if client_ids_param:
+            client_ids = [cid.strip() for cid in client_ids_param.split(',') if cid.strip()]
+            placeholders = ','.join(['?' for _ in client_ids])
+            cursor.execute(f'''
+                SELECT c.client_id, c.hostname, c.local_ip, g.name as group_name,
+                       c.last_report, c.created_at
+                FROM clients c
+                LEFT JOIN groups g ON c.group_id = g.id
+                WHERE c.client_id IN ({placeholders})
+                ORDER BY c.last_report DESC
+            ''', client_ids)
+        elif group_id:
+            cursor.execute('''
+                SELECT c.client_id, c.hostname, c.local_ip, g.name as group_name,
+                       c.last_report, c.created_at
+                FROM clients c
+                LEFT JOIN groups g ON c.group_id = g.id
+                WHERE c.group_id = ?
+                ORDER BY c.last_report DESC
+            ''', (group_id,))
+        else:
+            cursor.execute('''
+                SELECT c.client_id, c.hostname, c.local_ip, g.name as group_name,
+                       c.last_report, c.created_at
+                FROM clients c
+                LEFT JOIN groups g ON c.group_id = g.id
+                ORDER BY c.last_report DESC
+            ''')
+
+        clients = cursor.fetchall()
+
+        # 创建Excel工作簿
+        wb = Workbook()
+        ws = wb.active
+        ws.title = '客户端列表'
+
+        # 表头样式
+        header_font = Font(bold=True, color='FFFFFF')
+        header_fill = PatternFill(start_color='667eea', end_color='667eea', fill_type='solid')
+        header_alignment = Alignment(horizontal='center', vertical='center')
+
+        # 表头
+        headers = ['主机名', '客户端ID', 'IP地址', '分组', '最后上报时间', '创建时间',
+                   'CPU', '内存', '硬盘', '显卡']
+        for col, header in enumerate(headers, 1):
+            cell = ws.cell(row=1, column=col, value=header)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = header_alignment
+
+        # 填充数据
+        for row_idx, client in enumerate(clients, 2):
+            client_dict = dict(client)
+            client_id = client_dict['client_id']
+
+            # 获取最新硬件信息
+            cursor.execute('''
+                SELECT report_data FROM hardware_reports
+                WHERE client_id = ? ORDER BY timestamp DESC LIMIT 1
+            ''', (client_id,))
+            report = cursor.fetchone()
+
+            # 提取关键指标
+            cpu_str = '-'
+            mem_str = '-'
+            disk_str = '-'
+            gpu_str = '-'
+
+            if report:
+                hardware = json.loads(report['report_data'])
+
+                # CPU
+                if hardware.get('cpu') and isinstance(hardware['cpu'], list):
+                    cpu_names = [c.get('name', '?') for c in hardware['cpu']]
+                    cpu_cores = [f"{c.get('cores', '?')}核" for c in hardware['cpu']]
+                    cpu_str = ' | '.join([f"{n}({cores})" for n, cores in zip(cpu_names, cpu_cores)])
+
+                # 内存
+                if hardware.get('memory'):
+                    total = hardware['memory'].get('total_capacity', 0)
+                    if total:
+                        mem_str = f"{total / (1024**3):.1f} GB"
+                    elif hardware['memory'].get('modules'):
+                        total = sum(m.get('capacity', 0) for m in hardware['memory']['modules'])
+                        mem_str = f"{total / (1024**3):.1f} GB"
+
+                # 硬盘
+                if hardware.get('disk') and isinstance(hardware['disk'], list):
+                    disk_models = [d.get('model', '?') for d in hardware['disk']]
+                    disk_sizes = [f"{d.get('size', 0) / (1024**3):.0f}GB" for d in hardware['disk']]
+                    disk_str = ' | '.join([f"{m}({s})" for m, s in zip(disk_models, disk_sizes)])
+
+                # 显卡
+                if hardware.get('gpu') and isinstance(hardware['gpu'], list):
+                    gpu_names = [g.get('name', '?') for g in hardware['gpu']]
+                    gpu_str = ' | '.join(gpu_names)
+
+            ws.cell(row=row_idx, column=1, value=client_dict.get('hostname') or client_id)
+            ws.cell(row=row_idx, column=2, value=client_id)
+            ws.cell(row=row_idx, column=3, value=client_dict.get('local_ip') or '-')
+            ws.cell(row=row_idx, column=4, value=client_dict.get('group_name') or '未分组')
+            ws.cell(row=row_idx, column=5, value=client_dict.get('last_report') or '-')
+            ws.cell(row=row_idx, column=6, value=client_dict.get('created_at') or '-')
+            ws.cell(row=row_idx, column=7, value=cpu_str)
+            ws.cell(row=row_idx, column=8, value=mem_str)
+            ws.cell(row=row_idx, column=9, value=disk_str)
+            ws.cell(row=row_idx, column=10, value=gpu_str)
+
+        # 调整列宽
+        col_widths = [15, 20, 16, 15, 22, 22, 40, 12, 40, 30]
+        for i, width in enumerate(col_widths, 1):
+            ws.column_dimensions[chr(64 + i) if i <= 26 else 'A' + chr(64 + i - 26)].width = width
+
+        conn.close()
+
+        # 保存到内存并返回
+        output = io.BytesIO()
+        wb.save(output)
+        output.seek(0)
+
+        return send_file(
+            output,
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            as_attachment=True,
+            download_name=f'hardware_report_{datetime.now().strftime("%Y%m%d_%H%M%S")}.xlsx'
+        )
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/clients/batch-group', methods=['PUT'])
+def batch_assign_group():
+    """批量分配客户端到分组"""
+    try:
+        data = request.json
+        client_ids = data.get('client_ids', [])
+        group_id = data.get('group_id')
+
+        if not client_ids:
+            return jsonify({'error': '请选择要操作的客户端'}), 400
+
+        conn = get_db()
+        cursor = conn.cursor()
+
+        placeholders = ','.join(['?' for _ in client_ids])
+        cursor.execute(f'''
+            UPDATE clients SET group_id = ?
+            WHERE client_id IN ({placeholders})
+        ''', [group_id] + client_ids)
+
+        affected = cursor.rowcount
+        conn.commit()
+        conn.close()
+
+        return jsonify({
+            'status': 'success',
+            'affected': affected,
+            'message': f'成功将 {affected} 个客户端分配到分组'
+        })
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/client/<client_id>/history', methods=['GET'])
+def get_client_history(client_id):
+    """获取客户端硬件采集历史记录（最近10条）"""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+
+        # 验证客户端存在
+        cursor.execute('SELECT client_id FROM clients WHERE client_id = ?', (client_id,))
+        if not cursor.fetchone():
+            conn.close()
+            return jsonify({'error': '客户端不存在'}), 404
+
+        # 获取最近10条历史记录
+        cursor.execute('''
+            SELECT cpu_info, memory_info, disk_info, gpu_info, snapshot, timestamp
+            FROM hardware_history
+            WHERE client_id = ?
+            ORDER BY timestamp DESC
+            LIMIT 10
+        ''', (client_id,))
+
+        history = []
+        for row in cursor.fetchall():
+            row_dict = dict(row)
+            # 解析快照
+            if row_dict.get('snapshot'):
+                snapshot = json.loads(row_dict['snapshot'])
+            else:
+                snapshot = {}
+            row_dict['snapshot'] = snapshot
+            history.append(row_dict)
+
+        conn.close()
+
+        return jsonify({'status': 'success', 'data': history})
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/clients/batch-delete', methods=['DELETE'])
+def batch_delete_clients():
+    """批量删除客户端"""
+    try:
+        data = request.json
+        client_ids = data.get('client_ids', [])
+
+        if not client_ids:
+            return jsonify({'error': '请选择要删除的客户端'}), 400
+
+        conn = get_db()
+        cursor = conn.cursor()
+
+        placeholders = ','.join(['?' for _ in client_ids])
+        cursor.execute(f'DELETE FROM clients WHERE client_id IN ({placeholders})', client_ids)
+        affected = cursor.rowcount
+        conn.commit()
+        conn.close()
+
+        return jsonify({
+            'status': 'success',
+            'affected': affected,
+            'message': f'成功删除 {affected} 个客户端'
+        })
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
