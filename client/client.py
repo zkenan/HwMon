@@ -1,6 +1,9 @@
 """
 硬件监控客户端
-静默运行,开机自启,自动上报硬件信息到服务器
+支持三种运行模式:
+  1. 交互模式 - 菜单操作
+  2. 静默模式 --silent - 后台运行(兼容旧版本)
+  3. 服务模式 --service - 作为Windows服务运行
 支持配置文件管理和exe打包
 支持服务端主动采集
 """
@@ -17,6 +20,15 @@ from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from hardware_collector import HardwareCollector
 from config import ConfigManager
+from service import install_service, uninstall_service, get_service_status
+
+
+def get_exe_dir():
+    """获取exe所在目录"""
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(sys.executable)
+    else:
+        return os.path.dirname(os.path.abspath(__file__))
 
 
 def get_client_id(config):
@@ -486,6 +498,17 @@ def main():
     # 检测是否以静默模式运行(无控制台窗口)
     is_silent_mode = not has_console()
 
+    # --service 模式: 作为 Windows 服务运行
+    if "--service" in sys.argv:
+        import servicemanager
+        import service
+        os.chdir(get_exe_dir())
+        # 正确注册 SCM: Initialize -> PrepareToHostSingle -> StartServiceCtrlDispatcher
+        servicemanager.Initialize()
+        servicemanager.PrepareToHostSingle(service.HwMonService)
+        servicemanager.StartServiceCtrlDispatcher()
+        sys.exit(0)
+
     if "--uninstall" in sys.argv:
         # 卸载模式
         uninstall(config)
@@ -504,13 +527,17 @@ def main():
     else:
         # 交互模式
         while True:
+            # 获取当前服务状态
+            service_status = get_service_status()
+
             print("\n" + "=" * 50)
-            print("硬件监控客户端 v3.0")
+            print("硬件监控客户端 v4.0")
             print(f"本机: {socket.gethostname()} ({get_local_ip(config)})")
+            print(f"Windows服务状态: {service_status}")
             print("=" * 50)
             print("1. 立即测试采集硬件信息")
-            print("2. 安装并启动(开机自启+后台运行)")
-            print("3. 停止并卸载(取消开机自启)")
+            print("2. 安装为 Windows 服务(开机自启+完全后台)")
+            print("3. 卸载 Windows 服务")
             print("4. 编辑配置")
             print("5. 查看当前配置")
             print("6. 退出")
@@ -542,21 +569,29 @@ def main():
                     print(f"采集失败: {str(e)}")
 
             elif choice == "2":
-                print("\n正在安装...")
-                set_startup(config, True)
-                print("安装完成!客户端将在后台运行")
-                print(f"日志文件: {config.get_log_file()}")
-                print(f"配置文件: {config.CONFIG_FILE}")
-                print("\n提示: 可以关闭此窗口,程序会继续在后台运行")
-                run_silent(config)
+                print("\n正在安装 Windows 服务...")
+                print("(需要管理员权限)")
+                if install_service():
+                    print("\n安装完成!")
+                    print("服务将开机自动启动,完全在后台运行")
+                    print(f"日志文件: {config.get_log_file()}")
+                    print(f"配置文件: {config.CONFIG_FILE}")
+                    print("\n提示: 此控制台窗口可以安全关闭,服务会继续在后台运行")
+                else:
+                    print("\n安装失败,请以管理员身份运行此程序")
+                safe_input("\n按回车键继续...")
 
             elif choice == "3":
-                confirm = safe_input("\n确定要卸载吗? (y/n): ").strip().lower()
+                confirm = safe_input("\n确定要卸载 Windows 服务吗? (y/n): ").strip().lower()
                 if confirm == 'y':
-                    uninstall(config)
-                    sys.exit(0)
+                    print("\n正在卸载 Windows 服务...")
+                    if uninstall_service():
+                        print("\n卸载完成!")
+                    else:
+                        print("\n卸载失败,请以管理员身份运行此程序")
                 else:
                     print("已取消卸载")
+                safe_input("\n按回车键继续...")
 
             elif choice == "4":
                 show_config_editor(config)
