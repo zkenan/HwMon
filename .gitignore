@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.spec
+
+# Build outputs
+dist/
+build/
+nul
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Database (contains user data)
+*.db
+
+# Logs
+*.log
+client.log
+server.log
+
+# Deploy packages (generated, not source)
+deploy_package/
+
+# Config files with secrets
+config.json
+
+# Temp files
+*.tmp

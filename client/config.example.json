@@ -1,0 +1,30 @@
+{
+    "server": {
+        "url": "http://localhost:5000",
+        "timeout": 10,
+        "retry_times": 3,
+        "retry_interval": 60
+    },
+    "client": {
+        "report_interval": 300,
+        "auto_start": true,
+        "client_id": "",
+        "group_name": ""
+    },
+    "logging": {
+        "enabled": true,
+        "log_file": "client.log",
+        "max_size_mb": 10,
+        "backup_count": 5
+    },
+    "advanced": {
+        "collect_cpu": true,
+        "collect_memory": true,
+        "collect_disk": true,
+        "collect_gpu": true,
+        "collect_network": true,
+        "collect_motherboard": true,
+        "collect_bios": true,
+        "compress_data": false
+    }
+}
