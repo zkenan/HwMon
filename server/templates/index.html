@@ -48,6 +48,10 @@
         .status-offline { color: #f56565; }
         .report-scheduled { color: #718096; font-size: 11px; }
         .report-ondemand { color: #667eea; font-weight: bold; font-size: 11px; }
+        /* 硬件状态标识 */
+        .hw-status-normal { color: #48bb78; font-size: 11px; }
+        .hw-status-changed { color: #f56565; font-weight: bold; font-size: 11px; }
+        .hw-status-unknown { color: #718096; font-size: 11px; }
         .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; justify-content: center; align-items: center; }
         .modal.active { display: flex; }
         .modal-content { background: white; border-radius: 10px; max-width: 900px; width: 90%; max-height: 85vh; overflow-y: auto; }
@@ -103,12 +107,31 @@
         .history-table th { background: #667eea; color: white; padding: 8px 10px; }
         .history-table td { padding: 6px 10px; border-bottom: 1px solid #e2e8f0; }
         .history-table tr:hover { background: #f7fafc; }
+        /* Alert styles */
+        .alert-item { padding: 12px 15px; border: 1px solid #fed7d7; border-radius: 8px; margin-bottom: 10px; background: #fff5f5; }
+        .alert-item.resolved { opacity: 0.6; border-color: #cbd5e0; background: #f7fafc; }
+        .alert-item .alert-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+        .alert-item .alert-time { font-size: 12px; color: #718096; }
+        .alert-item .alert-type { font-weight: bold; color: #e53e3e; }
+        .alert-item .alert-detail { font-size: 13px; line-height: 1.6; }
+        .alert-item .alert-actions { margin-top: 8px; text-align: right; }
+        .badge-alert { background: #fed7d7; color: #c53030; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: bold; }
+        /* Email config form */
+        .email-config-form .hint { font-size: 12px; color: #718096; margin-top: 5px; }
     </style>
 </head>
 <body>
     <div class="header">
-        <h1>硬件监控系统</h1>
-        <p>实时监控和管理所有客户端硬件信息</p>
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+            <div>
+                <h1>硬件监控系统</h1>
+                <p>实时监控和管理所有客户端硬件信息</p>
+            </div>
+            <div style="display:flex;align-items:center;gap:15px;">
+                <span id="userInfo" style="font-size:14px;opacity:0.9;"></span>
+                <button class="btn btn-secondary" onclick="logout()" style="padding:8px 16px;font-size:13px;">退出登录</button>
+            </div>
+        </div>
     </div>
 
     <div class="container">
@@ -141,6 +164,11 @@
                 <button class="btn btn-primary" onclick="exportData('excel')">导出Excel</button>
                 <button class="btn btn-primary" onclick="exportData('csv')">导出CSV</button>
                 <button class="btn btn-primary" onclick="exportData('json')">导出JSON</button>
+                <button class="btn btn-danger" onclick="showAlertCenterModal()" style="position:relative;">
+                    告警中心
+                    <span id="alertBadge" class="badge-alert" style="display:none;position:absolute;top:-8px;right:-8px;">0</span>
+                </button>
+                <button class="btn btn-info" onclick="showEmailConfigModal()">邮件配置</button>
             </div>
         </div>
 
@@ -167,6 +195,7 @@
                             <th>主机名</th>
                             <th>IP地址</th>
                             <th>分组</th>
+                            <th>硬件状态</th>
                             <th>上报方式</th>
                             <th>最后上报时间</th>
                             <th>状态</th>
@@ -174,7 +203,7 @@
                         </tr>
                     </thead>
                     <tbody id="clientTableBody">
-                        <tr><td colspan="8" class="loading">加载中...</td></tr>
+                        <tr><td colspan="9" class="loading">加载中...</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -189,12 +218,17 @@
                 <button class="modal-close" onclick="closeModal('detailModal')">&times;</button>
             </div>
             <div class="modal-body">
+                <div style="margin-bottom:15px;text-align:right;">
+                    <button class="btn btn-success btn-small" onclick="setBaselineForCurrentClient()">设为基准</button>
+                </div>
                 <div class="tabs">
                     <button class="tab active" onclick="switchTab(this, 'tabHardware')">硬件信息</button>
                     <button class="tab" onclick="switchTab(this, 'tabHistory')">历史记录</button>
+                    <button class="tab" onclick="switchTab(this, 'tabAlerts')">告警记录</button>
                 </div>
                 <div class="tab-content active" id="tabHardware"><div class="loading">加载中...</div></div>
                 <div class="tab-content" id="tabHistory"><div class="loading">加载中...</div></div>
+                <div class="tab-content" id="tabAlerts"><div class="loading">加载中...</div></div>
             </div>
         </div>
     </div>
@@ -292,6 +326,151 @@
         </div>
     </div>
 
+    <!-- 告警中心模态框 -->
+    <div class="modal" id="alertCenterModal">
+        <div class="modal-content modal-content-lg">
+            <div class="modal-header">
+                <h3>告警中心</h3>
+                <button class="modal-close" onclick="closeModal('alertCenterModal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="tabs">
+                    <button class="tab active" onclick="switchAlertTab(this, 'tabUnresolved')">未解决告警</button>
+                    <button class="tab" onclick="switchAlertTab(this, 'tabResolved')">已解决告警</button>
+                </div>
+                <div class="tab-content active" id="tabUnresolved">
+                    <div style="margin-bottom:15px;text-align:right;">
+                        <button class="btn btn-success btn-small" onclick="batchResolveAlerts()">批量标记为已解决</button>
+                    </div>
+                    <div id="unresolvedAlertsList"><div class="loading">加载中...</div></div>
+                </div>
+                <div class="tab-content" id="tabResolved">
+                    <div id="resolvedAlertsList"><div class="loading">加载中...</div></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 邮件配置模态框 -->
+    <div class="modal" id="emailConfigModal">
+        <div class="modal-content" style="max-width: 700px;">
+            <div class="modal-header">
+                <h3>系统配置</h3>
+                <button class="modal-close" onclick="closeModal('emailConfigModal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="tabs">
+                    <button class="tab active" onclick="switchConfigTab(this, 'tabEmailConfig')">邮件配置</button>
+                    <button class="tab" onclick="switchConfigTab(this, 'tabAlertSettings')">告警设置</button>
+                </div>
+                
+                <!-- 邮件配置 Tab -->
+                <div class="tab-content active" id="tabEmailConfig">
+                    <form id="emailConfigForm" class="email-config-form">
+                        <div class="form-group">
+                            <label>SMTP服务器</label>
+                            <input type="text" id="smtpHost" placeholder="smtp.qq.com" required>
+                            <div class="hint">例如: smtp.qq.com (QQ邮箱), smtp.163.com (163邮箱)</div>
+                        </div>
+                        <div class="form-group">
+                            <label>SMTP端口</label>
+                            <input type="number" id="smtpPort" value="465" required>
+                            <div class="hint">SSL端口通常为465</div>
+                        </div>
+                        <div class="form-group">
+                            <label>发件人邮箱</label>
+                            <input type="email" id="smtpUser" placeholder="your@email.com" required>
+                        </div>
+                        <div class="form-group">
+                            <label>授权码/密码</label>
+                            <input type="password" id="smtpPassword" placeholder="请输入授权码或密码" required>
+                            <div class="hint">QQ邮箱/163邮箱需使用授权码，非登录密码</div>
+                        </div>
+                        <div class="form-group">
+                            <label>发件人名称</label>
+                            <input type="text" id="senderName" value="硬件监控系统">
+                        </div>
+                        <div class="form-group">
+                            <label>收件人列表（多个用逗号分隔）</label>
+                            <textarea id="recipients" placeholder="admin1@example.com, admin2@example.com" required></textarea>
+                        </div>
+                        <div class="form-group">
+                            <label>
+                                <input type="checkbox" id="emailEnabled"> 启用邮件告警
+                            </label>
+                        </div>
+                        <div style="display:flex;gap:10px;">
+                            <button type="submit" class="btn btn-primary">保存配置</button>
+                            <button type="button" class="btn btn-secondary" onclick="testEmailConfig()">发送测试邮件</button>
+                        </div>
+                    </form>
+                </div>
+
+                <!-- 告警设置 Tab -->
+                <div class="tab-content" id="tabAlertSettings">
+                    <form id="alertSettingsForm">
+                        <p style="margin-bottom:15px;color:#718096;">选择需要监控变更的硬件类型（勾选后，当该硬件发生变化时会触发告警）：</p>
+                        <div style="display:grid;grid-template-columns:repeat(2, 1fr);gap:15px;margin-bottom:20px;">
+                            <label style="display:flex;align-items:center;padding:12px;border:1px solid #e2e8f0;border-radius:8px;cursor:pointer;transition:all 0.3s;" onmouseover="this.style.background='#f7fafc'" onmouseout="this.style.background='white'">
+                                <input type="checkbox" id="monitorCpu" style="margin-right:10px;width:18px;height:18px;">
+                                <div>
+                                    <div style="font-weight:600;">CPU</div>
+                                    <div style="font-size:12px;color:#718096;">监控CPU型号变化</div>
+                                </div>
+                            </label>
+                            <label style="display:flex;align-items:center;padding:12px;border:1px solid #e2e8f0;border-radius:8px;cursor:pointer;transition:all 0.3s;" onmouseover="this.style.background='#f7fafc'" onmouseout="this.style.background='white'">
+                                <input type="checkbox" id="monitorGpu" style="margin-right:10px;width:18px;height:18px;">
+                                <div>
+                                    <div style="font-weight:600;">GPU</div>
+                                    <div style="font-size:12px;color:#718096;">监控显卡型号变化</div>
+                                </div>
+                            </label>
+                            <label style="display:flex;align-items:center;padding:12px;border:1px solid #e2e8f0;border-radius:8px;cursor:pointer;transition:all 0.3s;" onmouseover="this.style.background='#f7fafc'" onmouseout="this.style.background='white'">
+                                <input type="checkbox" id="monitorMemory" style="margin-right:10px;width:18px;height:18px;">
+                                <div>
+                                    <div style="font-weight:600;">内存</div>
+                                    <div style="font-size:12px;color:#718096;">监控内存容量变化</div>
+                                </div>
+                            </label>
+                            <label style="display:flex;align-items:center;padding:12px;border:1px solid #e2e8f0;border-radius:8px;cursor:pointer;transition:all 0.3s;" onmouseover="this.style.background='#f7fafc'" onmouseout="this.style.background='white'">
+                                <input type="checkbox" id="monitorDisk" style="margin-right:10px;width:18px;height:18px;">
+                                <div>
+                                    <div style="font-weight:600;">硬盘</div>
+                                    <div style="font-size:12px;color:#718096;">监控硬盘数量、型号和容量变化</div>
+                                </div>
+                            </label>
+                            <label style="display:flex;align-items:center;padding:12px;border:1px solid #e2e8f0;border-radius:8px;cursor:pointer;transition:all 0.3s;" onmouseover="this.style.background='#f7fafc'" onmouseout="this.style.background='white'">
+                                <input type="checkbox" id="monitorNetwork" style="margin-right:10px;width:18px;height:18px;">
+                                <div>
+                                    <div style="font-weight:600;">网卡</div>
+                                    <div style="font-size:12px;color:#718096;">监控网卡数量和描述变化</div>
+                                </div>
+                            </label>
+                            <label style="display:flex;align-items:center;padding:12px;border:1px solid #e2e8f0;border-radius:8px;cursor:pointer;transition:all 0.3s;" onmouseover="this.style.background='#f7fafc'" onmouseout="this.style.background='white'">
+                                <input type="checkbox" id="monitorMotherboard" style="margin-right:10px;width:18px;height:18px;">
+                                <div>
+                                    <div style="font-weight:600;">主板</div>
+                                    <div style="font-size:12px;color:#718096;">监控主板制造商和型号变化</div>
+                                </div>
+                            </label>
+                            <label style="display:flex;align-items:center;padding:12px;border:1px solid #e2e8f0;border-radius:8px;cursor:pointer;transition:all 0.3s;" onmouseover="this.style.background='#f7fafc'" onmouseout="this.style.background='white'">
+                                <input type="checkbox" id="monitorBios" style="margin-right:10px;width:18px;height:18px;">
+                                <div>
+                                    <div style="font-weight:600;">BIOS</div>
+                                    <div style="font-size:12px;color:#718096;">监控BIOS制造商和版本变化</div>
+                                </div>
+                            </label>
+                        </div>
+                        <div style="display:flex;gap:10px;">
+                            <button type="submit" class="btn btn-primary">保存设置</button>
+                            <button type="button" class="btn btn-secondary" onclick="resetAlertSettings()">恢复默认</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script>
         const API_BASE = '';
         let selectedClients = new Set();
@@ -343,7 +522,7 @@
 
                     const tbody = document.getElementById('clientTableBody');
                     if (clients.length === 0) {
-                        tbody.innerHTML = '<tr><td colspan="8" class="empty-state"><p>暂无客户端数据</p></td></tr>';
+                        tbody.innerHTML = '<tr><td colspan="9" class="empty-state"><p>暂无客户端数据</p></td></tr>';
                         selectedClients.clear();
                         updateBatchToolbar();
                         return;
@@ -354,12 +533,14 @@
                         const diffHours = (now - lastReport) / (1000*60*60);
                         const isOnline = diffHours < 24;
                         const checked = selectedClients.has(c.client_id) ? 'checked' : '';
+                        const safeId = c.client_id.replace(/[^a-zA-Z0-9]/g,'_');
                         return `<tr class="${checked ? 'selected' : ''}" data-client-id="${c.client_id}">
                             <td><input type="checkbox" class="client-cb" data-id="${c.client_id}" ${checked} onchange="toggleSelect('${c.client_id}', this.checked, this.closest('tr'))"></td>
                             <td><strong>${c.client_id}</strong></td>
                             <td><span class="ip-badge">${c.local_ip || '-'}</span></td>
                             <td>${c.group_name || '未分组'}</td>
-                            <td id="reportType_${c.client_id.replace(/[^a-zA-Z0-9]/g,'_')}">-</td>
+                            <td id="hwStatus_${safeId}"><span class="hw-status-unknown">检测中...</span></td>
+                            <td id="reportType_${safeId}">-</td>
                             <td>${formatDateTime(c.last_report)}</td>
                             <td class="${isOnline ? 'status-online' : 'status-offline'}">${isOnline ? '在线' : '离线'}</td>
                             <td class="action-btns">
@@ -371,11 +552,40 @@
                         </tr>`;
                     }).join('');
 
+                    // 异步加载每个客户端的硬件状态
+                    clients.forEach(c => loadClientHwStatus(c.client_id));
+
                     // 更新全选框状态
                     updateSelectAllState();
                     updateBatchToolbar();
                 }
             } catch (error) { console.error('加载客户端失败:', error); }
+        }
+
+        // ===== 加载客户端硬件状态 =====
+        async function loadClientHwStatus(clientId) {
+            try {
+                const response = await fetch(`${API_BASE}/api/client/${clientId}/baseline`);
+                const result = await response.json();
+                const safeId = clientId.replace(/[^a-zA-Z0-9]/g,'_');
+                const el = document.getElementById(`hwStatus_${safeId}`);
+                if (!el) return;
+
+                if (result.status === 'not_found') {
+                    el.innerHTML = '<span class="hw-status-unknown">无基准</span>';
+                } else if (result.status === 'success') {
+                    // 检查是否有未解决的告警
+                    const alertResp = await fetch(`${API_BASE}/api/client/${clientId}/alerts?resolved=false`);
+                    const alertResult = await alertResp.json();
+                    if (alertResult.status === 'success' && alertResult.data.length > 0) {
+                        el.innerHTML = `<span class="hw-status-changed" title="有${alertResult.data.length}个未解决告警">⚠ 已变更</span>`;
+                    } else {
+                        el.innerHTML = '<span class="hw-status-normal">✓ 正常</span>';
+                    }
+                }
+            } catch (error) {
+                console.error(`加载客户端 ${clientId} 硬件状态失败:`, error);
+            }
         }
 
         // ===== 选择相关 =====
@@ -429,6 +639,14 @@
 
         // ===== Tab 切换 =====
         function switchTab(btn, tabId) {
+            btn.closest('.modal-body').querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            btn.classList.add('active');
+            btn.closest('.modal-body').querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+            document.getElementById(tabId).classList.add('active');
+        }
+
+        // 系统配置 Tab 切换
+        function switchConfigTab(btn, tabId) {
             btn.closest('.modal-body').querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
             btn.classList.add('active');
             btn.closest('.modal-body').querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
@@ -583,13 +801,39 @@
                     document.querySelectorAll('#detailModal .tab').forEach((t, i) => t.classList.toggle('active', i === 0));
                     document.getElementById('tabHardware').classList.add('active');
                     document.getElementById('tabHistory').classList.remove('active');
+                    document.getElementById('tabAlerts').classList.remove('active');
+
+                    // 保存当前客户端ID供其他函数使用
+                    window.currentDetailClientId = clientId;
 
                     // 加载历史记录 Tab
                     loadHistory(clientId);
+                    // 加载告警记录 Tab
+                    loadClientAlerts(clientId);
 
                     document.getElementById('detailModal').classList.add('active');
                 }
             } catch (error) { console.error('获取详情失败:', error); alert('获取详情失败'); }
+        }
+
+        // ===== 设为基准 =====
+        async function setBaselineForCurrentClient() {
+            const clientId = window.currentDetailClientId;
+            if (!clientId) { showToast('请先打开客户端详情', 'error'); return; }
+            if (!confirm('确定将当前数据设为该客户端的硬件基准？这将覆盖之前的基准。')) return;
+
+            try {
+                const res = await fetch(`${API_BASE}/api/client/${clientId}/baseline`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'}
+                });
+                const r = await res.json();
+                if (r.status === 'success') {
+                    showToast('基准设置成功', 'success');
+                    loadClientHwStatus(clientId); // 刷新列表中的状态
+                    loadClientAlerts(clientId); // 刷新告警记录
+                } else alert(r.error);
+            } catch(e) { alert('设置基准失败'); }
         }
 
         // ===== 历史记录 =====
@@ -628,6 +872,39 @@
                 }
             } catch (error) {
                 container.innerHTML = '<div class="empty-state"><p>加载历史记录失败</p></div>';
+            }
+        }
+
+        // ===== 客户端告警记录 =====
+        async function loadClientAlerts(clientId) {
+            const container = document.getElementById('tabAlerts');
+            container.innerHTML = '<div class="loading">加载告警记录...</div>';
+            try {
+                const response = await fetch(`${API_BASE}/api/client/${clientId}/alerts`);
+                const result = await response.json();
+                if (result.status === 'success' && result.data.length > 0) {
+                    let html = `<p style="margin-bottom:15px;color:#718096;">共 ${result.data.length} 条告警记录</p>`;
+                    result.data.forEach(alert => {
+                        const changes = alert.alert_detail || [];
+                        let detailHtml = changes.map(c => `<p><strong>${c.label}:</strong> ${c.old} → ${c.new}</p>`).join('');
+                        const statusClass = alert.resolved ? 'resolved' : '';
+                        const statusText = alert.resolved ? '[已解决]' : '[未解决]';
+                        html += `<div class="alert-item ${statusClass}">
+                            <div class="alert-header">
+                                <span class="alert-type">${statusText} ${formatDateTime(alert.created_at)}</span>
+                            </div>
+                            <div class="alert-detail">${detailHtml}</div>
+                            ${!alert.resolved ? `<div class="alert-actions">
+                                <button class="btn btn-success btn-small" onclick="resolveSingleAlert(${alert.id})">标记为已解决</button>
+                            </div>` : ''}
+                        </div>`;
+                    });
+                    container.innerHTML = html;
+                } else {
+                    container.innerHTML = '<div class="empty-state"><p>暂无告警记录</p></div>';
+                }
+            } catch (error) {
+                container.innerHTML = '<div class="empty-state"><p>加载告警记录失败</p></div>';
             }
         }
 
@@ -845,6 +1122,268 @@
             }
         }
 
+        // ===== 告警中心 =====
+        async function showAlertCenterModal() {
+            document.getElementById('alertCenterModal').classList.add('active');
+            await loadUnresolvedAlerts();
+            await loadResolvedAlerts();
+            updateAlertBadge();
+        }
+
+        function switchAlertTab(btn, tabId) {
+            btn.closest('.modal-body').querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            btn.classList.add('active');
+            btn.closest('.modal-body').querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+            document.getElementById(tabId).classList.add('active');
+        }
+
+        async function loadUnresolvedAlerts() {
+            const container = document.getElementById('unresolvedAlertsList');
+            try {
+                const response = await fetch(`${API_BASE}/api/alerts?resolved=false&per_page=50`);
+                const result = await response.json();
+                if (result.status === 'success' && result.data.length > 0) {
+                    let html = '';
+                    result.data.forEach(alert => {
+                        const changes = alert.alert_detail || [];
+                        let detailHtml = changes.map(c => `<p><strong>${c.label}:</strong> ${c.old} → ${c.new}</p>`).join('');
+                        html += `<div class="alert-item" data-alert-id="${alert.id}">
+                            <div class="alert-header">
+                                <span class="alert-type">${alert.client_id}</span>
+                                <span class="alert-time">${formatDateTime(alert.created_at)}</span>
+                            </div>
+                            <p style="font-size:12px;color:#718096;margin-bottom:5px;">IP: ${alert.local_ip || '-'} | 主机名: ${alert.hostname || '-'}</p>
+                            <div class="alert-detail">${detailHtml}</div>
+                            <div class="alert-actions">
+                                <button class="btn btn-success btn-small" onclick="resolveSingleAlert(${alert.id})">标记为已解决</button>
+                            </div>
+                        </div>`;
+                    });
+                    container.innerHTML = html;
+                } else {
+                    container.innerHTML = '<div class="empty-state"><p>暂无未解决告警</p></div>';
+                }
+            } catch (error) {
+                container.innerHTML = '<div class="empty-state"><p>加载失败</p></div>';
+            }
+        }
+
+        async function loadResolvedAlerts() {
+            const container = document.getElementById('resolvedAlertsList');
+            try {
+                const response = await fetch(`${API_BASE}/api/alerts?resolved=true&per_page=50`);
+                const result = await response.json();
+                if (result.status === 'success' && result.data.length > 0) {
+                    let html = '';
+                    result.data.forEach(alert => {
+                        const changes = alert.alert_detail || [];
+                        let detailHtml = changes.map(c => `<p><strong>${c.label}:</strong> ${c.old} → ${c.new}</p>`).join('');
+                        html += `<div class="alert-item resolved">
+                            <div class="alert-header">
+                                <span class="alert-type">${alert.client_id}</span>
+                                <span class="alert-time">${formatDateTime(alert.created_at)}</span>
+                            </div>
+                            <p style="font-size:12px;color:#718096;margin-bottom:5px;">IP: ${alert.local_ip || '-'} | 主机名: ${alert.hostname || '-'}</p>
+                            <div class="alert-detail">${detailHtml}</div>
+                        </div>`;
+                    });
+                    container.innerHTML = html;
+                } else {
+                    container.innerHTML = '<div class="empty-state"><p>暂无已解决告警</p></div>';
+                }
+            } catch (error) {
+                container.innerHTML = '<div class="empty-state"><p>加载失败</p></div>';
+            }
+        }
+
+        async function resolveSingleAlert(alertId) {
+            try {
+                const res = await fetch(`${API_BASE}/api/alerts/${alertId}`, {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ resolved: true })
+                });
+                const r = await res.json();
+                if (r.status === 'success') {
+                    showToast('已标记为已解决', 'success');
+                    loadUnresolvedAlerts();
+                    loadResolvedAlerts();
+                    updateAlertBadge();
+                    loadClients(); // 刷新客户端列表以更新硬件状态
+                } else alert(r.error);
+            } catch(e) { alert('操作失败'); }
+        }
+
+        async function batchResolveAlerts() {
+            const unresolvedItems = document.querySelectorAll('#unresolvedAlertsList .alert-item');
+            if (unresolvedItems.length === 0) { showToast('没有未解决的告警', 'error'); return; }
+
+            const alertIds = Array.from(unresolvedItems).map(el => parseInt(el.dataset.alertId));
+            if (!confirm(`确定批量标记 ${alertIds.length} 个告警为已解决？`)) return;
+
+            try {
+                const res = await fetch(`${API_BASE}/api/alerts/batch-resolve`, {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ alert_ids: alertIds })
+                });
+                const r = await res.json();
+                if (r.status === 'success') {
+                    showToast(r.message, 'success');
+                    loadUnresolvedAlerts();
+                    loadResolvedAlerts();
+                    updateAlertBadge();
+                    loadClients();
+                } else alert(r.error);
+            } catch(e) { alert('批量操作失败'); }
+        }
+
+        async function updateAlertBadge() {
+            try {
+                const response = await fetch(`${API_BASE}/api/alerts?resolved=false&per_page=1`);
+                const result = await response.json();
+                const badge = document.getElementById('alertBadge');
+                if (result.status === 'success' && result.pagination.total > 0) {
+                    badge.textContent = result.pagination.total;
+                    badge.style.display = 'inline';
+                } else {
+                    badge.style.display = 'none';
+                }
+            } catch (error) { console.error('更新告警徽章失败:', error); }
+        }
+
+        // ===== 邮件配置 =====
+        async function showEmailConfigModal() {
+            document.getElementById('emailConfigModal').classList.add('active');
+            await loadEmailConfig();
+            await loadAlertSettings();
+        }
+
+        async function loadEmailConfig() {
+            try {
+                const response = await fetch(`${API_BASE}/api/email-config`);
+                const result = await response.json();
+                if (result.status === 'success') {
+                    const config = result.data;
+                    document.getElementById('smtpHost').value = config.smtp_host || 'smtp.qq.com';
+                    document.getElementById('smtpPort').value = config.smtp_port || 465;
+                    document.getElementById('smtpUser').value = config.smtp_user || '';
+                    document.getElementById('smtpPassword').value = config.smtp_password || '';
+                    document.getElementById('senderName').value = config.sender_name || '硬件监控系统';
+                    const recipients = Array.isArray(config.recipients) ? config.recipients.join(', ') : '';
+                    document.getElementById('recipients').value = recipients;
+                    document.getElementById('emailEnabled').checked = !!config.enabled;
+                }
+            } catch (error) { console.error('加载邮件配置失败:', error); }
+        }
+
+        async function loadAlertSettings() {
+            try {
+                const response = await fetch(`${API_BASE}/api/alert-settings`);
+                const result = await response.json();
+                if (result.status === 'success') {
+                    const settings = result.data;
+                    document.getElementById('monitorCpu').checked = !!settings.monitor_cpu;
+                    document.getElementById('monitorGpu').checked = !!settings.monitor_gpu;
+                    document.getElementById('monitorMemory').checked = !!settings.monitor_memory;
+                    document.getElementById('monitorDisk').checked = !!settings.monitor_disk;
+                    document.getElementById('monitorNetwork').checked = !!settings.monitor_network;
+                    document.getElementById('monitorMotherboard').checked = !!settings.monitor_motherboard;
+                    document.getElementById('monitorBios').checked = !!settings.monitor_bios;
+                }
+            } catch (error) { console.error('加载告警设置失败:', error); }
+        }
+
+        // 告警设置表单提交
+        document.getElementById('alertSettingsForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            try {
+                const res = await fetch(`${API_BASE}/api/alert-settings`, {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        monitor_cpu: document.getElementById('monitorCpu').checked,
+                        monitor_gpu: document.getElementById('monitorGpu').checked,
+                        monitor_memory: document.getElementById('monitorMemory').checked,
+                        monitor_disk: document.getElementById('monitorDisk').checked,
+                        monitor_network: document.getElementById('monitorNetwork').checked,
+                        monitor_motherboard: document.getElementById('monitorMotherboard').checked,
+                        monitor_bios: document.getElementById('monitorBios').checked
+                    })
+                });
+                const r = await res.json();
+                if (r.status === 'success') {
+                    showToast('告警设置已保存', 'success');
+                } else alert(r.error);
+            } catch(e) { alert('保存失败'); }
+        });
+
+        // 恢复默认告警设置
+        function resetAlertSettings() {
+            document.getElementById('monitorCpu').checked = true;
+            document.getElementById('monitorGpu').checked = true;
+            document.getElementById('monitorMemory').checked = true;
+            document.getElementById('monitorDisk').checked = true;
+            document.getElementById('monitorNetwork').checked = false;
+            document.getElementById('monitorMotherboard').checked = false;
+            document.getElementById('monitorBios').checked = false;
+            showToast('已恢复默认设置（CPU、GPU、内存、硬盘）', 'info');
+        }
+
+        document.getElementById('emailConfigForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            try {
+                const recipientsStr = document.getElementById('recipients').value;
+                const recipients = recipientsStr.split(',').map(s => s.trim()).filter(s => s);
+
+                const res = await fetch(`${API_BASE}/api/email-config`, {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        smtp_host: document.getElementById('smtpHost').value,
+                        smtp_port: parseInt(document.getElementById('smtpPort').value),
+                        smtp_user: document.getElementById('smtpUser').value,
+                        smtp_password: document.getElementById('smtpPassword').value,
+                        sender_name: document.getElementById('senderName').value,
+                        recipients: recipients,
+                        enabled: document.getElementById('emailEnabled').checked
+                    })
+                });
+                const r = await res.json();
+                if (r.status === 'success') {
+                    showToast('邮件配置已保存', 'success');
+                    closeModal('emailConfigModal');
+                } else alert(r.error);
+            } catch(e) { alert('保存失败'); }
+        });
+
+        async function testEmailConfig() {
+            const testRecipient = prompt('请输入测试收件人邮箱:');
+            if (!testRecipient) return;
+
+            showToast('正在发送测试邮件...', 'info');
+            try {
+                const res = await fetch(`${API_BASE}/api/email-config/test`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        smtp_host: document.getElementById('smtpHost').value,
+                        smtp_port: parseInt(document.getElementById('smtpPort').value),
+                        smtp_user: document.getElementById('smtpUser').value,
+                        smtp_password: document.getElementById('smtpPassword').value,
+                        sender_name: document.getElementById('senderName').value,
+                        test_recipient: testRecipient
+                    })
+                });
+                const r = await res.json();
+                if (r.status === 'success') {
+                    showToast('测试邮件发送成功', 'success');
+                } else {
+                    showToast(r.error || '测试邮件发送失败', 'error');
+                }
+            } catch(e) { showToast('测试邮件发送失败', 'error'); }
+        }
+
         // ===== 工具函数 =====
         function closeModal(id) { document.getElementById(id).classList.remove('active'); }
         function formatDateTime(s) { return s ? new Date(s).toLocaleString('zh-CN') : '-'; }
@@ -856,11 +1395,48 @@
             setTimeout(() => t.remove(), 3000);
         }
 
+        // ===== 登录相关 =====
+        async function checkLoginAndShowUser() {
+            try {
+                const response = await fetch(`${API_BASE}/api/check-login`);
+                const result = await response.json();
+                if (result.logged_in) {
+                    document.getElementById('userInfo').textContent = `👤 ${result.username}`;
+                } else {
+                    window.location.href = '/login';
+                }
+            } catch (error) {
+                console.error('检查登录状态失败:', error);
+            }
+        }
+
+        async function logout() {
+            if (!confirm('确定要退出登录吗？')) return;
+            
+            try {
+                const response = await fetch(`${API_BASE}/api/logout`, {
+                    method: 'POST'
+                });
+                const result = await response.json();
+                if (result.status === 'success') {
+                    showToast('已退出登录', 'success');
+                    setTimeout(() => {
+                        window.location.href = '/login';
+                    }, 500);
+                }
+            } catch (error) {
+                showToast('退出失败', 'error');
+            }
+        }
+
         // ===== 初始化 =====
         document.addEventListener('DOMContentLoaded', () => {
+            checkLoginAndShowUser(); // 检查登录状态
             loadGroups(); loadClients();
             document.getElementById('groupFilter').addEventListener('change', loadClients);
             setInterval(() => { loadClients(); loadGroups(); }, 30000);
+            updateAlertBadge(); // 初始化时更新告警徽章
+            setInterval(updateAlertBadge, 60000); // 每分钟更新一次告警徽章
         });
 
         document.querySelectorAll('.modal').forEach(m => {

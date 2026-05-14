@@ -9,7 +9,7 @@ import json
 import sqlite3
 import time
 from datetime import datetime
-from flask import Flask, request, jsonify, render_template, send_file
+from flask import Flask, request, jsonify, render_template, send_file, session, redirect, url_for
 from flask_cors import CORS
 import io
 import csv
@@ -18,9 +18,17 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, PatternFill
+import functools
 
 app = Flask(__name__)
 CORS(app)
+
+# 登录配置
+app.secret_key = 'hardware_monitor_secret_key_2026'  # 用于session加密
+LOGIN_CONFIG = {
+    'username': 'xapi',
+    'password': 'Ai78965'
+}
 
 DATABASE = 'hardware_monitor.db'
 
@@ -104,6 +112,63 @@ def init_db():
     cursor.execute('INSERT OR IGNORE INTO groups (name, description) VALUES (?, ?)',
                    ('默认分组', '未分组的客户端'))
 
+    # 创建客户端硬件基准表（首次上报自动创建）
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS client_baselines (
+            client_id TEXT PRIMARY KEY,
+            cpu_snapshot TEXT,
+            gpu_snapshot TEXT,
+            memory_snapshot TEXT,
+            disk_snapshot TEXT,
+            baseline_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (client_id) REFERENCES clients(client_id) ON DELETE CASCADE
+        )
+    ''')
+
+    # 创建告警记录表
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS alert_records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            client_id TEXT NOT NULL,
+            alert_type TEXT NOT NULL,
+            alert_detail TEXT NOT NULL,
+            resolved INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (client_id) REFERENCES clients(client_id) ON DELETE CASCADE
+        )
+    ''')
+
+    # 创建邮件配置表（只允许一行）
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS email_config (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            smtp_host TEXT NOT NULL DEFAULT 'smtp.qq.com',
+            smtp_port INTEGER NOT NULL DEFAULT 465,
+            smtp_user TEXT NOT NULL DEFAULT '',
+            smtp_password TEXT NOT NULL DEFAULT '',
+            sender_name TEXT DEFAULT '硬件监控系统',
+            recipients TEXT NOT NULL DEFAULT '[]',
+            enabled INTEGER DEFAULT 0
+        )
+    ''')
+    cursor.execute('INSERT OR IGNORE INTO email_config (id) VALUES (1)')
+
+    # 创建告警设置表（配置需要监控的硬件类型）
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS alert_settings (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            monitor_cpu INTEGER DEFAULT 1,
+            monitor_gpu INTEGER DEFAULT 1,
+            monitor_memory INTEGER DEFAULT 1,
+            monitor_disk INTEGER DEFAULT 1,
+            monitor_network INTEGER DEFAULT 0,
+            monitor_motherboard INTEGER DEFAULT 0,
+            monitor_bios INTEGER DEFAULT 0,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    cursor.execute('INSERT OR IGNORE INTO alert_settings (id) VALUES (1)')
+
     conn.commit()
     conn.close()
 
@@ -113,6 +178,238 @@ def get_db():
     conn = sqlite3.connect(DATABASE)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def login_required(f):
+    """登录验证装饰器"""
+    @functools.wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'logged_in' not in session:
+            # 如果是API请求，返回401
+            if request.path.startswith('/api/'):
+                return jsonify({'error': '未登录', 'need_login': True}), 401
+            # 否则重定向到登录页面
+            return redirect(url_for('login'))
+        return f(*args, **kwargs)
+    return decorated_function
+
+
+# ==================== 硬件变更检测与邮件告警 ====================
+
+def compare_hardware(baseline_snapshots, new_hardware, alert_settings=None):
+    """
+    对比新硬件数据与基准快照，返回变更列表。
+    baseline_snapshots: {'cpu': JSON, 'gpu': JSON, 'memory': JSON, 'disk': JSON}
+    new_hardware: 完整的硬件信息dict
+    alert_settings: 告警设置dict，包含monitor_cpu, monitor_gpu等字段
+    返回: [{'type': 'cpu', 'label': 'CPU', 'old': '...', 'new': '...'}, ...]
+    """
+    changes = []
+
+    # 如果没有提供告警设置，使用默认设置（全部监控）
+    if alert_settings is None:
+        alert_settings = {
+            'monitor_cpu': 1,
+            'monitor_gpu': 1,
+            'monitor_memory': 1,
+            'monitor_disk': 1,
+            'monitor_network': 0,
+            'monitor_motherboard': 0,
+            'monitor_bios': 0
+        }
+
+    # CPU对比 - 对比型号名称
+    if alert_settings.get('monitor_cpu', 1):
+        old_cpu = json.loads(baseline_snapshots.get('cpu', '[]')) if baseline_snapshots.get('cpu') else []
+        new_cpu = new_hardware.get('cpu', [])
+        if old_cpu and new_cpu:
+            old_names = sorted([c.get('name', '') for c in old_cpu])
+            new_names = sorted([c.get('name', '') for c in new_cpu])
+            if old_names != new_names:
+                changes.append({
+                    'type': 'cpu',
+                    'label': 'CPU',
+                    'old': ', '.join(old_names) if old_names else '未知',
+                    'new': ', '.join(new_names) if new_names else '未知'
+                })
+
+    # GPU对比 - 对比型号名称
+    if alert_settings.get('monitor_gpu', 1):
+        old_gpu = json.loads(baseline_snapshots.get('gpu', '[]')) if baseline_snapshots.get('gpu') else []
+        new_gpu = new_hardware.get('gpu', [])
+        if old_gpu and new_gpu:
+            old_names = sorted([g.get('name', '') for g in old_gpu])
+            new_names = sorted([g.get('name', '') for g in new_gpu])
+            if old_names != new_names:
+                changes.append({
+                    'type': 'gpu',
+                    'label': 'GPU',
+                    'old': ', '.join(old_names) if old_names else '未知',
+                    'new': ', '.join(new_names) if new_names else '未知'
+                })
+
+    # 内存对比 - 对比总容量
+    if alert_settings.get('monitor_memory', 1):
+        old_mem = json.loads(baseline_snapshots.get('memory', '{}')) if baseline_snapshots.get('memory') else {}
+        new_mem = new_hardware.get('memory', {})
+        if old_mem and new_mem:
+            old_total = old_mem.get('total_capacity', 0)
+            new_total = new_mem.get('total_capacity', 0)
+            # 计算单条容量总和作为总容量
+            if not old_total and old_mem.get('modules'):
+                old_total = sum(m.get('capacity', 0) for m in old_mem['modules'])
+            if not new_total and new_mem.get('modules'):
+                new_total = sum(m.get('capacity', 0) for m in new_mem['modules'])
+            if old_total and new_total and old_total != new_total:
+                old_gb = old_total / (1024**3)
+                new_gb = new_total / (1024**3)
+                changes.append({
+                    'type': 'memory',
+                    'label': '内存',
+                    'old': f'{old_gb:.1f} GB',
+                    'new': f'{new_gb:.1f} GB'
+                })
+
+    # 硬盘对比 - 对比数量、型号和容量
+    if alert_settings.get('monitor_disk', 1):
+        old_disk = json.loads(baseline_snapshots.get('disk', '[]')) if baseline_snapshots.get('disk') else []
+        new_disk = new_hardware.get('disk', [])
+        if old_disk and new_disk:
+            old_info = sorted([(d.get('model', ''), d.get('size', 0)) for d in old_disk])
+            new_info = sorted([(d.get('model', ''), d.get('size', 0)) for d in new_disk])
+            if len(old_disk) != len(new_disk) or old_info != new_info:
+                old_str = ', '.join([f"{d.get('model','?')}({d.get('size',0)//(1024**3)}GB)" for d in old_disk])
+                new_str = ', '.join([f"{d.get('model','?')}({d.get('size',0)//(1024**3)}GB)" for d in new_disk])
+                changes.append({
+                    'type': 'disk',
+                    'label': '硬盘',
+                    'old': old_str or '未知',
+                    'new': new_str or '未知'
+                })
+
+    # 网卡对比 - 对比网卡数量和描述
+    if alert_settings.get('monitor_network', 0):
+        old_network = json.loads(baseline_snapshots.get('network', '[]')) if baseline_snapshots.get('network') else []
+        new_network = new_hardware.get('network', [])
+        if old_network and new_network:
+            old_descs = sorted([n.get('description', '') for n in old_network])
+            new_descs = sorted([n.get('description', '') for n in new_network])
+            if old_descs != new_descs:
+                changes.append({
+                    'type': 'network',
+                    'label': '网卡',
+                    'old': ', '.join(old_descs) if old_descs else '未知',
+                    'new': ', '.join(new_descs) if new_descs else '未知'
+                })
+
+    # 主板对比 - 对比制造商和型号
+    if alert_settings.get('monitor_motherboard', 0):
+        old_mb = json.loads(baseline_snapshots.get('motherboard', '{}')) if baseline_snapshots.get('motherboard') else {}
+        new_mb = new_hardware.get('motherboard', {})
+        if old_mb and new_mb:
+            old_info = f"{old_mb.get('manufacturer', '')}-{old_mb.get('product', '')}"
+            new_info = f"{new_mb.get('manufacturer', '')}-{new_mb.get('product', '')}"
+            if old_info != new_info:
+                changes.append({
+                    'type': 'motherboard',
+                    'label': '主板',
+                    'old': old_info or '未知',
+                    'new': new_info or '未知'
+                })
+
+    # BIOS对比 - 对比制造商和版本
+    if alert_settings.get('monitor_bios', 0):
+        old_bios = json.loads(baseline_snapshots.get('bios', '{}')) if baseline_snapshots.get('bios') else {}
+        new_bios = new_hardware.get('bios', {})
+        if old_bios and new_bios:
+            old_info = f"{old_bios.get('manufacturer', '')}-{old_bios.get('version', '')}"
+            new_info = f"{new_bios.get('manufacturer', '')}-{new_bios.get('version', '')}"
+            if old_info != new_info:
+                changes.append({
+                    'type': 'bios',
+                    'label': 'BIOS',
+                    'old': old_info or '未知',
+                    'new': new_info or '未知'
+                })
+
+    return changes
+
+
+def get_email_config(conn):
+    """获取邮件配置"""
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM email_config WHERE id = 1')
+    row = cursor.fetchone()
+    if row:
+        return dict(row)
+    return None
+
+
+def send_alert_email(client_id, hostname, local_ip, changes):
+    """发送硬件变更告警邮件"""
+    try:
+        conn = get_db()
+        config = get_email_config(conn)
+        conn.close()
+
+        if not config or not config.get('enabled'):
+            return False
+
+        recipients = json.loads(config.get('recipients', '[]'))
+        if not recipients:
+            return False
+
+        import smtplib
+        from email.mime.text import MIMEText
+        from email.mime.multipart import MIMEMultipart
+
+        smtp_host = config['smtp_host']
+        smtp_port = config['smtp_port']
+        smtp_user = config['smtp_user']
+        smtp_password = config['smtp_password']
+        sender_name = config.get('sender_name', '硬件监控系统')
+
+        # 构建邮件内容
+        change_lines = []
+        for c in changes:
+            change_lines.append(f'<p><strong>{c["label"]}:</strong> {c["old"]} → {c["new"]}</p>')
+
+        html_body = f'''
+        <html><body style="font-family:Microsoft YaHei,Arial,sans-serif;">
+        <h2 style="color:#e53e3e;">【硬件变更告警】</h2>
+        <table style="border-collapse:collapse;">
+            <tr><td style="padding:5px 10px;font-weight:bold;">客户端:</td><td style="padding:5px 10px;">{hostname or client_id}</td></tr>
+            <tr><td style="padding:5px 10px;font-weight:bold;">IP地址:</td><td style="padding:5px 10px;">{local_ip or '-'}</td></tr>
+            <tr><td style="padding:5px 10px;font-weight:bold;">变更时间:</td><td style="padding:5px 10px;">{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</td></tr>
+        </table>
+        <h3 style="margin-top:20px;">变更详情:</h3>
+        {''.join(change_lines)}
+        <hr style="margin:20px 0;">
+        <p style="color:#718096;">如需重置基准，请登录硬件监控系统进行操作。</p>
+        </body></html>
+        '''
+
+        msg = MIMEMultipart('alternative')
+        msg['Subject'] = f'【硬件变更告警】客户端 {hostname or client_id} 检测到硬件变更'
+        msg['From'] = f'{sender_name} <{smtp_user}>'
+        msg['To'] = ', '.join(recipients)
+        msg.attach(MIMEText(html_body, 'html', 'utf-8'))
+
+        # 发送邮件
+        server = smtplib.SMTP_SSL(smtp_host, smtp_port)
+        server.login(smtp_user, smtp_password)
+        server.sendmail(smtp_user, recipients, msg.as_string())
+        server.quit()
+        return True
+
+    except Exception as e:
+        import traceback
+        print(f'邮件发送失败: {str(e)}')
+        print(traceback.format_exc())
+        return False
+
+
+# =================================================================
 
 
 def collect_single_client(client_id, local_ip):
@@ -167,12 +464,55 @@ def collect_single_client(client_id, local_ip):
 @app.route('/')
 def index():
     """主页"""
+    if 'logged_in' not in session:
+        return redirect(url_for('login'))
     return render_template('index.html')
+
+
+@app.route('/login')
+def login():
+    """登录页面"""
+    return render_template('login.html')
+
+
+@app.route('/api/login', methods=['POST'])
+def api_login():
+    """登录API"""
+    try:
+        data = request.json
+        username = data.get('username', '')
+        password = data.get('password', '')
+
+        if username == LOGIN_CONFIG['username'] and password == LOGIN_CONFIG['password']:
+            session['logged_in'] = True
+            session['username'] = username
+            return jsonify({'status': 'success', 'message': '登录成功'})
+        else:
+            return jsonify({'status': 'error', 'message': '用户名或密码错误'}), 401
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/logout', methods=['POST'])
+def api_logout():
+    """登出API"""
+    session.clear()
+    return jsonify({'status': 'success', 'message': '已登出'})
+
+
+@app.route('/api/check-login', methods=['GET'])
+def check_login():
+    """检查登录状态"""
+    if 'logged_in' in session:
+        return jsonify({'status': 'success', 'logged_in': True, 'username': session.get('username')})
+    else:
+        return jsonify({'status': 'success', 'logged_in': False})
 
 
 @app.route('/api/report', methods=['POST'])
 def receive_report():
-    """接收客户端上报的硬件信息"""
+    """接收客户端上报的硬件信息（含基准管理和变更检测）"""
     try:
         data = request.json
         client_id = data.get('client_id')
@@ -226,16 +566,73 @@ def receive_report():
             AND client_id = ?
         ''', (client_id, client_id))
 
+        # ==================== 硬件变更检测与告警 ====================
+        # 检查是否有基准数据
+        cursor.execute('SELECT * FROM client_baselines WHERE client_id = ?', (client_id,))
+        baseline = cursor.fetchone()
+
+        if not baseline:
+            # 首次上报：自动创建基准
+            cursor.execute('''
+                INSERT INTO client_baselines (client_id, cpu_snapshot, gpu_snapshot, memory_snapshot, disk_snapshot)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (
+                client_id,
+                cpu_info,
+                gpu_info,
+                mem_info,
+                disk_info
+            ))
+            print(f'[INFO] 客户端 {client_id} 首次上报，已自动创建基准')
+        else:
+            # 有基准：对比硬件变化
+            # 获取告警设置
+            cursor.execute('SELECT * FROM alert_settings WHERE id = 1')
+            alert_settings_row = cursor.fetchone()
+            alert_settings = dict(alert_settings_row) if alert_settings_row else None
+
+            baseline_snapshots = {
+                'cpu': baseline['cpu_snapshot'],
+                'gpu': baseline['gpu_snapshot'],
+                'memory': baseline['memory_snapshot'],
+                'disk': baseline['disk_snapshot'],
+                'network': json.dumps(hardware_info.get('network', []), ensure_ascii=False) if hardware_info.get('network') else '',
+                'motherboard': json.dumps(hardware_info.get('motherboard', {}), ensure_ascii=False) if hardware_info.get('motherboard') else '',
+                'bios': json.dumps(hardware_info.get('bios', {}), ensure_ascii=False) if hardware_info.get('bios') else ''
+            }
+
+            changes = compare_hardware(baseline_snapshots, hardware_info, alert_settings)
+
+            if changes:
+                # 发现变更：记录告警
+                alert_detail = json.dumps(changes, ensure_ascii=False)
+                cursor.execute('''
+                    INSERT INTO alert_records (client_id, alert_type, alert_detail)
+                    VALUES (?, ?, ?)
+                ''', (client_id, 'hardware_change', alert_detail))
+
+                print(f'[ALERT] 客户端 {client_id} 检测到硬件变更: {len(changes)} 项')
+
+                # 尝试发送邮件
+                email_sent = send_alert_email(client_id, hostname, local_ip, changes)
+                if email_sent:
+                    print(f'[INFO] 已向管理员发送告警邮件')
+                else:
+                    print(f'[WARN] 告警邮件发送失败（可能未配置或配置错误）')
+
         conn.commit()
         conn.close()
 
         return jsonify({'status': 'success', 'message': '接收成功'})
 
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
 
 @app.route('/api/clients', methods=['GET'])
+@login_required
 def get_clients():
     """获取所有客户端列表"""
     try:
@@ -269,6 +666,7 @@ def get_clients():
 
 
 @app.route('/api/client/<client_id>', methods=['GET'])
+@login_required
 def get_client_detail(client_id):
     """获取客户端详细信息"""
     try:
@@ -314,6 +712,7 @@ def get_client_detail(client_id):
 
 
 @app.route('/api/collect/<client_id>', methods=['POST'])
+@login_required
 def collect_from_client(client_id):
     """主动采集单个客户端"""
     try:
@@ -360,6 +759,7 @@ def collect_from_client(client_id):
 
 
 @app.route('/api/collect/all', methods=['POST'])
+@login_required
 def collect_all_clients():
     """一键采集: 并发向所有客户端发送采集请求"""
     try:
@@ -441,6 +841,7 @@ def collect_all_clients():
 
 
 @app.route('/api/groups', methods=['GET'])
+@login_required
 def get_groups():
     """获取所有分组"""
     try:
@@ -465,6 +866,7 @@ def get_groups():
 
 
 @app.route('/api/groups', methods=['POST'])
+@login_required
 def create_group():
     """创建新分组"""
     try:
@@ -494,6 +896,7 @@ def create_group():
 
 
 @app.route('/api/groups/<int:group_id>', methods=['PUT'])
+@login_required
 def update_group(group_id):
     """更新分组"""
     try:
@@ -517,6 +920,7 @@ def update_group(group_id):
 
 
 @app.route('/api/groups/<int:group_id>', methods=['DELETE'])
+@login_required
 def delete_group(group_id):
     """删除分组"""
     try:
@@ -541,6 +945,7 @@ def delete_group(group_id):
 
 
 @app.route('/api/clients/<client_id>/group', methods=['PUT'])
+@login_required
 def assign_client_to_group(client_id):
     """将客户端分配到分组"""
     try:
@@ -563,6 +968,7 @@ def assign_client_to_group(client_id):
 
 
 @app.route('/api/clients/<client_id>', methods=['DELETE'])
+@login_required
 def delete_client(client_id):
     """删除客户端"""
     try:
@@ -580,6 +986,7 @@ def delete_client(client_id):
 
 
 @app.route('/api/export/csv', methods=['GET'])
+@login_required
 def export_csv():
     """导出所有客户端信息为CSV"""
     try:
@@ -636,6 +1043,7 @@ def export_csv():
 
 
 @app.route('/api/export/json', methods=['GET'])
+@login_required
 def export_json():
     """导出所有客户端信息为JSON"""
     try:
@@ -691,6 +1099,7 @@ def export_json():
 
 
 @app.route('/api/export/excel', methods=['GET'])
+@login_required
 def export_excel():
     """导出客户端硬件信息为Excel文件"""
     try:
@@ -835,6 +1244,7 @@ def export_excel():
 
 
 @app.route('/api/clients/batch-group', methods=['PUT'])
+@login_required
 def batch_assign_group():
     """批量分配客户端到分组"""
     try:
@@ -869,6 +1279,7 @@ def batch_assign_group():
 
 
 @app.route('/api/client/<client_id>/history', methods=['GET'])
+@login_required
 def get_client_history(client_id):
     """获取客户端硬件采集历史记录（最近10条）"""
     try:
@@ -910,6 +1321,7 @@ def get_client_history(client_id):
 
 
 @app.route('/api/clients/batch-delete', methods=['DELETE'])
+@login_required
 def batch_delete_clients():
     """批量删除客户端"""
     try:
@@ -938,7 +1350,433 @@ def batch_delete_clients():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/client/<client_id>/baseline', methods=['GET'])
+@login_required
+def get_client_baseline(client_id):
+    """获取客户端的硬件基准信息"""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+
+        cursor.execute('SELECT * FROM client_baselines WHERE client_id = ?', (client_id,))
+        baseline = cursor.fetchone()
+
+        if not baseline:
+            conn.close()
+            return jsonify({'status': 'not_found', 'message': '该客户端尚未建立基准'})
+
+        baseline_dict = dict(baseline)
+        # 解析JSON字段
+        for key in ['cpu_snapshot', 'gpu_snapshot', 'memory_snapshot', 'disk_snapshot']:
+            if baseline_dict.get(key):
+                baseline_dict[key] = json.loads(baseline_dict[key])
+
+        conn.close()
+        return jsonify({'status': 'success', 'data': baseline_dict})
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/client/<client_id>/baseline', methods=['POST'])
+@login_required
+def set_client_baseline(client_id):
+    """手动设置/重置客户端的硬件基准（使用当前最新上报数据）"""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+
+        # 验证客户端存在
+        cursor.execute('SELECT client_id FROM clients WHERE client_id = ?', (client_id,))
+        if not cursor.fetchone():
+            conn.close()
+            return jsonify({'error': '客户端不存在'}), 404
+
+        # 获取最新的硬件报告
+        cursor.execute('''
+            SELECT report_data FROM hardware_reports
+            WHERE client_id = ? ORDER BY timestamp DESC LIMIT 1
+        ''', (client_id,))
+        report = cursor.fetchone()
+
+        if not report:
+            conn.close()
+            return jsonify({'error': '该客户端尚未上报任何硬件数据'}), 400
+
+        hardware_info = json.loads(report['report_data'])
+
+        # 提取关键指标
+        cpu_info = json.dumps(hardware_info.get('cpu', []), ensure_ascii=False) if hardware_info.get('cpu') else ''
+        mem_info = json.dumps(hardware_info.get('memory', {}), ensure_ascii=False) if hardware_info.get('memory') else ''
+        disk_info = json.dumps(hardware_info.get('disk', []), ensure_ascii=False) if hardware_info.get('disk') else ''
+        gpu_info = json.dumps(hardware_info.get('gpu', []), ensure_ascii=False) if hardware_info.get('gpu') else ''
+
+        # 插入或更新基准
+        cursor.execute('''
+            INSERT INTO client_baselines (client_id, cpu_snapshot, gpu_snapshot, memory_snapshot, disk_snapshot)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(client_id) DO UPDATE SET
+                cpu_snapshot = excluded.cpu_snapshot,
+                gpu_snapshot = excluded.gpu_snapshot,
+                memory_snapshot = excluded.memory_snapshot,
+                disk_snapshot = excluded.disk_snapshot,
+                baseline_timestamp = CURRENT_TIMESTAMP
+        ''', (client_id, cpu_info, gpu_info, mem_info, disk_info))
+
+        conn.commit()
+        conn.close()
+
+        return jsonify({'status': 'success', 'message': '基准设置成功'})
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/client/<client_id>/alerts', methods=['GET'])
+@login_required
+def get_client_alerts(client_id):
+    """获取指定客户端的告警记录"""
+    try:
+        resolved = request.args.get('resolved')  # 'true' or 'false' or None for all
+
+        conn = get_db()
+        cursor = conn.cursor()
+
+        query = '''
+            SELECT a.*, c.hostname, c.local_ip
+            FROM alert_records a
+            LEFT JOIN clients c ON a.client_id = c.client_id
+            WHERE a.client_id = ?
+        '''
+        params = [client_id]
+
+        if resolved is not None:
+            query += ' AND a.resolved = ?'
+            params.append(1 if resolved == 'true' else 0)
+
+        query += ' ORDER BY a.created_at DESC'
+
+        cursor.execute(query, params)
+        alerts = [dict(row) for row in cursor.fetchall()]
+
+        # 解析alert_detail JSON
+        for alert in alerts:
+            if alert.get('alert_detail'):
+                alert['alert_detail'] = json.loads(alert['alert_detail'])
+
+        conn.close()
+        return jsonify({'status': 'success', 'data': alerts})
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/alerts', methods=['GET'])
+@login_required
+def get_all_alerts():
+    """获取所有告警记录（支持分页和过滤）"""
+    try:
+        page = int(request.args.get('page', 1))
+        per_page = int(request.args.get('per_page', 20))
+        resolved = request.args.get('resolved')  # 'true' or 'false' or None
+
+        conn = get_db()
+        cursor = conn.cursor()
+
+        query = '''
+            SELECT a.*, c.hostname, c.local_ip
+            FROM alert_records a
+            LEFT JOIN clients c ON a.client_id = c.client_id
+            WHERE 1=1
+        '''
+        params = []
+
+        if resolved is not None:
+            query += ' AND a.resolved = ?'
+            params.append(1 if resolved == 'true' else 0)
+
+        # 获取总数
+        count_query = query.replace('SELECT a.*, c.hostname, c.local_ip', 'SELECT COUNT(*)')
+        cursor.execute(count_query, params)
+        total = cursor.fetchone()[0]
+
+        # 分页查询
+        query += ' ORDER BY a.created_at DESC LIMIT ? OFFSET ?'
+        params.extend([per_page, (page - 1) * per_page])
+
+        cursor.execute(query, params)
+        alerts = [dict(row) for row in cursor.fetchall()]
+
+        # 解析alert_detail JSON
+        for alert in alerts:
+            if alert.get('alert_detail'):
+                alert['alert_detail'] = json.loads(alert['alert_detail'])
+
+        conn.close()
+        return jsonify({
+            'status': 'success',
+            'data': alerts,
+            'pagination': {
+                'page': page,
+                'per_page': per_page,
+                'total': total,
+                'pages': (total + per_page - 1) // per_page
+            }
+        })
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/alerts/<int:alert_id>', methods=['PUT'])
+@login_required
+def resolve_alert(alert_id):
+    """标记单个告警为已解决"""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+
+        cursor.execute('UPDATE alert_records SET resolved = 1 WHERE id = ?', (alert_id,))
+
+        if cursor.rowcount == 0:
+            conn.close()
+            return jsonify({'error': '告警记录不存在'}), 404
+
+        conn.commit()
+        conn.close()
+
+        return jsonify({'status': 'success', 'message': '告警已标记为已解决'})
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/alerts/batch-resolve', methods=['PUT'])
+@login_required
+def batch_resolve_alerts():
+    """批量标记告警为已解决"""
+    try:
+        data = request.json
+        alert_ids = data.get('alert_ids', [])
+
+        if not alert_ids:
+            return jsonify({'error': '请选择要解决的告警'}), 400
+
+        conn = get_db()
+        cursor = conn.cursor()
+
+        placeholders = ','.join(['?' for _ in alert_ids])
+        cursor.execute(f'UPDATE alert_records SET resolved = 1 WHERE id IN ({placeholders})', alert_ids)
+        affected = cursor.rowcount
+
+        conn.commit()
+        conn.close()
+
+        return jsonify({
+            'status': 'success',
+            'affected': affected,
+            'message': f'成功标记 {affected} 个告警为已解决'
+        })
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/email-config', methods=['GET'])
+@login_required
+def get_email_config_api():
+    """获取邮件配置"""
+    try:
+        conn = get_db()
+        config = get_email_config(conn)
+        conn.close()
+
+        if not config:
+            return jsonify({'error': '邮件配置不存在'}), 404
+
+        # 隐藏密码字段（返回时不显示完整密码）
+        config_copy = dict(config)
+        if config_copy.get('smtp_password'):
+            config_copy['smtp_password'] = '******'
+
+        return jsonify({'status': 'success', 'data': config_copy})
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/email-config', methods=['PUT'])
+@login_required
+def update_email_config():
+    """更新邮件配置"""
+    try:
+        data = request.json
+
+        conn = get_db()
+        cursor = conn.cursor()
+
+        # 检查是否需要保留原密码
+        if data.get('smtp_password') == '******':
+            # 获取原密码
+            cursor.execute('SELECT smtp_password FROM email_config WHERE id = 1')
+            row = cursor.fetchone()
+            old_password = row['smtp_password'] if row else ''
+            data['smtp_password'] = old_password
+
+        cursor.execute('''
+            UPDATE email_config SET
+                smtp_host = ?,
+                smtp_port = ?,
+                smtp_user = ?,
+                smtp_password = ?,
+                sender_name = ?,
+                recipients = ?,
+                enabled = ?
+            WHERE id = 1
+        ''', (
+            data.get('smtp_host', 'smtp.qq.com'),
+            data.get('smtp_port', 465),
+            data.get('smtp_user', ''),
+            data.get('smtp_password', ''),
+            data.get('sender_name', '硬件监控系统'),
+            json.dumps(data.get('recipients', [])),
+            1 if data.get('enabled') else 0
+        ))
+
+        conn.commit()
+        conn.close()
+
+        return jsonify({'status': 'success', 'message': '邮件配置已更新'})
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/email-config/test', methods=['POST'])
+@login_required
+def test_email_config():
+    """测试邮件配置（发送测试邮件）"""
+    try:
+        data = request.json
+
+        import smtplib
+        from email.mime.text import MIMEText
+        from email.mime.multipart import MIMEMultipart
+
+        smtp_host = data.get('smtp_host', 'smtp.qq.com')
+        smtp_port = data.get('smtp_port', 465)
+        smtp_user = data.get('smtp_user', '')
+        smtp_password = data.get('smtp_password', '')
+        sender_name = data.get('sender_name', '硬件监控系统')
+        test_recipient = data.get('test_recipient', '')
+
+        if not smtp_user or not smtp_password or not test_recipient:
+            return jsonify({'error': '请填写完整的SMTP配置和测试收件人'}), 400
+
+        # 构建测试邮件
+        html_body = f'''
+        <html><body style="font-family:Microsoft YaHei,Arial,sans-serif;">
+        <h2 style="color:#38a169;">【邮件配置测试】</h2>
+        <p>这是一封来自硬件监控系统的测试邮件。</p>
+        <p>如果您收到此邮件，说明SMTP配置正确。</p>
+        <p style="color:#718096; margin-top:20px;">发送时间: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</p>
+        </body></html>
+        '''
+
+        msg = MIMEMultipart('alternative')
+        msg['Subject'] = '【测试邮件】硬件监控系统配置测试'
+        msg['From'] = f'{sender_name} <{smtp_user}>'
+        msg['To'] = test_recipient
+        msg.attach(MIMEText(html_body, 'html', 'utf-8'))
+
+        # 发送邮件
+        server = smtplib.SMTP_SSL(smtp_host, smtp_port)
+        server.login(smtp_user, smtp_password)
+        server.sendmail(smtp_user, [test_recipient], msg.as_string())
+        server.quit()
+
+        return jsonify({'status': 'success', 'message': '测试邮件发送成功'})
+
+    except smtplib.SMTPAuthenticationError:
+        return jsonify({'error': 'SMTP认证失败，请检查用户名和密码'}), 400
+    except smtplib.SMTPConnectError:
+        return jsonify({'error': '无法连接到SMTP服务器，请检查主机和端口'}), 400
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': f'邮件发送失败: {str(e)}'}), 500
+
+
+@app.route('/api/alert-settings', methods=['GET'])
+@login_required
+def get_alert_settings():
+    """获取告警设置"""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM alert_settings WHERE id = 1')
+        row = cursor.fetchone()
+        conn.close()
+
+        if row:
+            return jsonify({'status': 'success', 'data': dict(row)})
+        else:
+            return jsonify({'status': 'success', 'data': {
+                'monitor_cpu': 1,
+                'monitor_gpu': 1,
+                'monitor_memory': 1,
+                'monitor_disk': 1,
+                'monitor_network': 0,
+                'monitor_motherboard': 0,
+                'monitor_bios': 0
+            }})
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/alert-settings', methods=['PUT'])
+@login_required
+def update_alert_settings():
+    """更新告警设置"""
+    try:
+        data = request.json
+
+        conn = get_db()
+        cursor = conn.cursor()
+
+        cursor.execute('''
+            UPDATE alert_settings SET
+                monitor_cpu = ?,
+                monitor_gpu = ?,
+                monitor_memory = ?,
+                monitor_disk = ?,
+                monitor_network = ?,
+                monitor_motherboard = ?,
+                monitor_bios = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = 1
+        ''', (
+            1 if data.get('monitor_cpu') else 0,
+            1 if data.get('monitor_gpu') else 0,
+            1 if data.get('monitor_memory') else 0,
+            1 if data.get('monitor_disk') else 0,
+            1 if data.get('monitor_network') else 0,
+            1 if data.get('monitor_motherboard') else 0,
+            1 if data.get('monitor_bios') else 0
+        ))
+
+        conn.commit()
+        conn.close()
+
+        return jsonify({'status': 'success', 'message': '告警设置已更新'})
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/config', methods=['GET'])
+@login_required
 def get_collect_config():
     """获取采集配置"""
     return jsonify({
