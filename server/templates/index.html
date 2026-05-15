@@ -3,13 +3,23 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>硬件监控系统</title>
+    <title>HwMon - 硬件监控系统</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: 'Microsoft YaHei', Arial, sans-serif; background: #f5f7fa; color: #333; }
         .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px 40px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
         .header h1 { font-size: 24px; margin-bottom: 5px; }
         .header p { opacity: 0.9; font-size: 14px; }
+        .main-layout { display: flex; gap: 20px; }
+        .sidebar { width: 250px; background: white; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); padding: 20px; height: fit-content; position: sticky; top: 20px; }
+        .sidebar h3 { font-size: 16px; color: #667eea; margin-bottom: 15px; padding-bottom: 10px; border-bottom: 2px solid #f0f0f0; }
+        .group-list { list-style: none; padding: 0; margin: 0; }
+        .group-item { padding: 12px 15px; margin-bottom: 8px; border-radius: 8px; cursor: pointer; transition: all 0.3s; display: flex; justify-content: space-between; align-items: center; background: #f7fafc; }
+        .group-item:hover { background: #e2e8f0; transform: translateX(5px); }
+        .group-item.active { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; }
+        .group-item .count { background: rgba(102, 126, 234, 0.2); padding: 2px 8px; border-radius: 12px; font-size: 12px; font-weight: bold; }
+        .group-item.active .count { background: rgba(255, 255, 255, 0.3); }
+        .content-area { flex: 1; }
         .container { max-width: 1500px; margin: 30px auto; padding: 0 20px; }
         .toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 10px; }
         .btn { padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; font-size: 14px; transition: all 0.3s; }
@@ -124,7 +134,7 @@
     <div class="header">
         <div style="display:flex;justify-content:space-between;align-items:center;">
             <div>
-                <h1>硬件监控系统</h1>
+                <h1>HwMon - 硬件监控系统</h1>
                 <p>实时监控和管理所有客户端硬件信息</p>
             </div>
             <div style="display:flex;align-items:center;gap:15px;">
@@ -135,77 +145,87 @@
     </div>
 
     <div class="container">
-        <div class="stats">
-            <div class="stat-card">
-                <h3>总客户端数</h3>
-                <div class="value" id="totalClients">0</div>
+        <div class="main-layout">
+            <!-- 左侧分组栏 -->
+            <div class="sidebar">
+                <h3>📁 分组列表</h3>
+                <ul class="group-list" id="sidebarGroupList">
+                    <li class="loading">加载中...</li>
+                </ul>
             </div>
-            <div class="stat-card">
-                <h3>分组数量</h3>
-                <div class="value" id="totalGroups">0</div>
-            </div>
-            <div class="stat-card">
-                <h3>在线客户端</h3>
-                <div class="value" id="onlineClients">0</div>
-            </div>
-        </div>
 
-        <div class="toolbar">
-            <div class="filter-group">
-                <select id="groupFilter">
-                    <option value="">全部分组</option>
-                </select>
-                <button class="btn btn-secondary" onclick="loadClients()">刷新</button>
-            </div>
-            <div class="filter-group">
-                <button class="btn btn-warning" onclick="collectAll()" id="btnCollectAll">一键采集</button>
-                <button class="btn btn-secondary" onclick="showGroupManageModal()">分组管理</button>
-                <button class="btn btn-success" onclick="showCreateGroupModal()">新建分组</button>
-                <button class="btn btn-primary" onclick="exportData('excel')">导出Excel</button>
-                <button class="btn btn-primary" onclick="exportData('csv')">导出CSV</button>
-                <button class="btn btn-primary" onclick="exportData('json')">导出JSON</button>
-                <button class="btn btn-danger" onclick="showAlertCenterModal()" style="position:relative;">
-                    告警中心
-                    <span id="alertBadge" class="badge-alert" style="display:none;position:absolute;top:-8px;right:-8px;">0</span>
-                </button>
-                <button class="btn btn-info" onclick="showEmailConfigModal()">邮件配置</button>
-            </div>
-        </div>
+            <!-- 右侧内容区 -->
+            <div class="content-area">
+                <div class="stats">
+                    <div class="stat-card">
+                        <h3>总客户端数</h3>
+                        <div class="value" id="totalClients">0</div>
+                    </div>
+                    <div class="stat-card">
+                        <h3>分组数量</h3>
+                        <div class="value" id="totalGroups">0</div>
+                    </div>
+                    <div class="stat-card">
+                        <h3>在线客户端</h3>
+                        <div class="value" id="onlineClients">0</div>
+                    </div>
+                </div>
 
-        <!-- 批量操作工具栏 -->
-        <div class="batch-toolbar" id="batchToolbar">
-            <span class="selected-count">已选 <span id="selectedCount">0</span> 项</span>
-            <button class="btn btn-warning btn-small" onclick="batchCollect()">批量采集</button>
-            <button class="btn btn-primary btn-small" onclick="batchExportExcel()">批量导出Excel</button>
-            <button class="btn btn-info btn-small" onclick="showBatchGroupModal()">批量分配分组</button>
-            <button class="btn btn-danger btn-small" onclick="batchDelete()">批量删除</button>
-            <button class="btn btn-secondary btn-small" onclick="clearSelection()">取消选择</button>
-        </div>
+                <div class="toolbar">
+                    <div class="filter-group">
+                        <button class="btn btn-secondary" onclick="loadClients()">刷新</button>
+                    </div>
+                    <div class="filter-group">
+                        <button class="btn btn-warning" onclick="collectAll()" id="btnCollectAll">一键采集</button>
+                        <button class="btn btn-secondary" onclick="showGroupManageModal()">分组管理</button>
+                        <button class="btn btn-success" onclick="showCreateGroupModal()">新建分组</button>
+                        <button class="btn btn-primary" onclick="exportData('excel')">导出Excel</button>
+                        <button class="btn btn-primary" onclick="exportData('csv')">导出CSV</button>
+                        <button class="btn btn-primary" onclick="exportData('json')">导出JSON</button>
+                        <button class="btn btn-danger" onclick="showAlertCenterModal()" style="position:relative;">
+                            告警中心
+                            <span id="alertBadge" class="badge-alert" style="display:none;position:absolute;top:-8px;right:-8px;">0</span>
+                        </button>
+                        <button class="btn btn-info" onclick="showEmailConfigModal()">邮件配置</button>
+                    </div>
+                </div>
 
-        <div class="card">
-            <div class="card-header">
-                <h2>客户端列表</h2>
-                <span style="font-size:12px;color:#718096;">点击行首复选框选择客户端</span>
-            </div>
-            <div class="table-container">
-                <table>
-                    <thead>
-                        <tr>
-                            <th style="width:40px;"><input type="checkbox" id="selectAll" onchange="toggleSelectAll(this.checked)" title="全选"></th>
-                            <th>主机名</th>
-                            <th>IP地址</th>
-                            <th>分组</th>
-                            <th>硬件状态</th>
-                            <th>上报方式</th>
-                            <th>最后上报时间</th>
-                            <th>状态</th>
-                            <th>操作</th>
-                        </tr>
-                    </thead>
-                    <tbody id="clientTableBody">
-                        <tr><td colspan="9" class="loading">加载中...</td></tr>
-                    </tbody>
-                </table>
+                <!-- 批量操作工具栏 -->
+                <div class="batch-toolbar" id="batchToolbar">
+                    <span class="selected-count">已选 <span id="selectedCount">0</span> 项</span>
+                    <button class="btn btn-warning btn-small" onclick="batchCollect()">批量采集</button>
+                    <button class="btn btn-primary btn-small" onclick="batchExportExcel()">批量导出Excel</button>
+                    <button class="btn btn-info btn-small" onclick="showBatchGroupModal()">批量分配分组</button>
+                    <button class="btn btn-danger btn-small" onclick="batchDelete()">批量删除</button>
+                    <button class="btn btn-secondary btn-small" onclick="clearSelection()">取消选择</button>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h2>客户端列表</h2>
+                        <span style="font-size:12px;color:#718096;">点击行首复选框选择客户端</span>
+                    </div>
+                    <div class="table-container">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th style="width:40px;"><input type="checkbox" id="selectAll" onchange="toggleSelectAll(this.checked)" title="全选"></th>
+                                    <th onclick="sortBy('hostname')" style="cursor:pointer;user-select:none;">主机名 <span id="sort_hostname"></span></th>
+                                    <th onclick="sortBy('local_ip')" style="cursor:pointer;user-select:none;">IP地址 <span id="sort_local_ip"></span></th>
+                                    <th onclick="sortBy('group_name')" style="cursor:pointer;user-select:none;">分组 <span id="sort_group_name"></span></th>
+                                    <th>硬件状态</th>
+                                    <th>上报方式</th>
+                                    <th onclick="sortBy('last_report')" style="cursor:pointer;user-select:none;">最后上报时间 <span id="sort_last_report"></span></th>
+                                    <th>状态</th>
+                                    <th>操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="clientTableBody">
+                                <tr><td colspan="9" class="loading">加载中...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -476,6 +496,8 @@
         let selectedClients = new Set();
 
         // ===== 分组加载 =====
+        let currentGroupId = '';  // 当前选中的分组ID
+
         async function loadGroups() {
             try {
                 const response = await fetch(`${API_BASE}/api/groups`);
@@ -483,12 +505,11 @@
                 if (result.status === 'success') {
                     const groups = result.data;
                     document.getElementById('totalGroups').textContent = groups.length;
-                    const filterSelect = document.getElementById('groupFilter');
-                    const currentVal = filterSelect.value;
-                    filterSelect.innerHTML = '<option value="">全部分组</option>';
-                    groups.forEach(g => {
-                        filterSelect.innerHTML += `<option value="${g.id}" ${g.id == currentVal ? 'selected' : ''}>${g.name} (${g.client_count})</option>`;
-                    });
+                    
+                    // 渲染左侧分组栏
+                    renderSidebarGroups(groups);
+                    
+                    // 保留原有的下拉框逻辑（用于批量分配等）
                     const assignSelect = document.getElementById('assignGroupSelect');
                     assignSelect.innerHTML = '<option value="">-- 请选择分组 --</option>';
                     groups.forEach(g => {
@@ -503,11 +524,58 @@
             } catch (error) { console.error('加载分组失败:', error); }
         }
 
-        // ===== 客户端加载（带复选框） =====
+        // 渲染左侧分组栏
+        function renderSidebarGroups(groups) {
+            const sidebarList = document.getElementById('sidebarGroupList');
+            
+            // 计算总客户端数
+            const totalClients = groups.reduce((sum, g) => sum + g.client_count, 0);
+            
+            let html = '';
+            // 全部客户端选项
+            html += `
+                <li class="group-item ${currentGroupId === '' ? 'active' : ''}" onclick="selectGroup('')">
+                    <span>📊 全部客户端</span>
+                    <span class="count">${totalClients}</span>
+                </li>
+            `;
+            
+            // 未分组选项
+            html += `
+                <li class="group-item ${currentGroupId === 'ungrouped' ? 'active' : ''}" onclick="selectGroup('ungrouped')">
+                    <span>📁 未分组</span>
+                    <span class="count">0</span>
+                </li>
+            `;
+            
+            // 各个分组
+            groups.forEach(g => {
+                html += `
+                    <li class="group-item ${currentGroupId == g.id ? 'active' : ''}" onclick="selectGroup(${g.id})">
+                        <span>${g.name}</span>
+                        <span class="count">${g.client_count}</span>
+                    </li>
+                `;
+            });
+            
+            sidebarList.innerHTML = html;
+        }
+
+        // 选择分组
+        function selectGroup(groupId) {
+            currentGroupId = groupId;
+            loadGroups();  // 重新渲染以更新选中状态
+            loadClients();  // 加载对应分组的客户端
+        }
+
+        // ===== 客户端加载（带复选框和排序） =====
+        let currentSortBy = 'last_report';
+        let currentOrder = 'desc';
+
         async function loadClients() {
             try {
-                const groupId = document.getElementById('groupFilter').value;
-                const url = groupId ? `${API_BASE}/api/clients?group_id=${groupId}` : `${API_BASE}/api/clients`;
+                const groupId = currentGroupId;  // 使用左侧分组栏选中的分组ID
+                const url = `${API_BASE}/api/clients?group_id=${groupId}&sort_by=${currentSortBy}&order=${currentOrder}`;
                 const response = await fetch(url);
                 const result = await response.json();
                 if (result.status === 'success') {
@@ -528,6 +596,9 @@
                         return;
                     }
 
+                    // 更新“未分组”计数
+                    updateUngroupedCount(clients, groupId);
+
                     tbody.innerHTML = clients.map(c => {
                         const lastReport = new Date(c.last_report);
                         const diffHours = (now - lastReport) / (1000*60*60);
@@ -536,7 +607,7 @@
                         const safeId = c.client_id.replace(/[^a-zA-Z0-9]/g,'_');
                         return `<tr class="${checked ? 'selected' : ''}" data-client-id="${c.client_id}">
                             <td><input type="checkbox" class="client-cb" data-id="${c.client_id}" ${checked} onchange="toggleSelect('${c.client_id}', this.checked, this.closest('tr'))"></td>
-                            <td><strong>${c.client_id}</strong></td>
+                            <td><strong>${c.hostname || c.client_id}</strong></td>
                             <td><span class="ip-badge">${c.local_ip || '-'}</span></td>
                             <td>${c.group_name || '未分组'}</td>
                             <td id="hwStatus_${safeId}"><span class="hw-status-unknown">检测中...</span></td>
@@ -651,6 +722,64 @@
             btn.classList.add('active');
             btn.closest('.modal-body').querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
             document.getElementById(tabId).classList.add('active');
+        }
+
+        // ===== 排序功能 =====
+        function sortBy(field) {
+            if (currentSortBy === field) {
+                // 如果点击同一列，切换排序方向
+                currentOrder = currentOrder === 'asc' ? 'desc' : 'asc';
+            } else {
+                // 否则按新字段排序，默认降序
+                currentSortBy = field;
+                currentOrder = 'desc';
+            }
+            
+            // 更新表头指示器
+            updateSortIndicators();
+            
+            // 重新加载数据
+            loadClients();
+        }
+
+        function updateSortIndicators() {
+            // 清除所有指示器
+            ['hostname', 'local_ip', 'group_name', 'last_report'].forEach(f => {
+                const el = document.getElementById(`sort_${f}`);
+                if (el) el.textContent = '';
+            });
+            
+            // 设置当前排序字段的指示器
+            const indicator = document.getElementById(`sort_${currentSortBy}`);
+            if (indicator) {
+                indicator.textContent = currentOrder === 'asc' ? '↑' : '↓';
+            }
+        }
+
+        // ===== 更新未分组计数 =====
+        async function updateUngroupedCount(currentClients, currentGroupId) {
+            try {
+                // 获取所有客户端以计算未分组数量
+                const response = await fetch(`${API_BASE}/api/clients`);
+                const result = await response.json();
+                if (result.status === 'success') {
+                    const ungroupedCount = result.data.filter(c => !c.group_id || c.group_id === null).length;
+                    
+                    // 更新“未分组”选项的文本
+                    const filterSelect = document.getElementById('groupFilter');
+                    const ungroupedOption = Array.from(filterSelect.options).find(opt => opt.value === 'ungrouped');
+                    if (ungroupedOption) {
+                        ungroupedOption.textContent = `未分组 (${ungroupedCount})`;
+                        
+                        // 如果当前选中的是“未分组”，更新选中状态的文本
+                        if (currentGroupId === 'ungrouped') {
+                            ungroupedOption.selected = true;
+                        }
+                    }
+                }
+            } catch (error) {
+                console.error('更新未分组计数失败:', error);
+            }
         }
 
         // ===== 采集 =====

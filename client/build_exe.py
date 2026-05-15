@@ -25,12 +25,12 @@ class BuildTool:
         self.current_dir = Path(__file__).parent.absolute()
         self.dist_dir = self.current_dir / "dist"
         self.build_dir = self.current_dir / "build"
-        self.spec_file = self.current_dir / "HardwareMonitor.spec"
+        self.spec_file = self.current_dir / "HwMonClient.spec"
 
     def check_prerequisites(self):
         """检查打包前置条件"""
         print("=" * 70)
-        print("  硬件监控客户端 - 打包工具")
+        print("  HwMonClient - 打包工具")
         print("=" * 70)
         print()
 
@@ -143,7 +143,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='HardwareMonitor',
+    name='HwMonClient',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -163,7 +163,7 @@ exe = EXE(
         with open(self.spec_file, 'w', encoding='utf-8') as f:
             f.write(spec_content)
 
-        print("✓ 打包配置文件已创建: HardwareMonitor.spec")
+        print("✓ 打包配置文件已创建: HwMonClient.spec")
         print()
 
     def build_exe(self):
@@ -205,7 +205,7 @@ exe = EXE(
             )
 
             # 检查是否成功
-            exe_path = self.dist_dir / "HardwareMonitor.exe"
+            exe_path = self.dist_dir / "HwMonClient.exe"
             if exe_path.exists():
                 file_size = exe_path.stat().st_size
                 size_mb = file_size / (1024 * 1024)
@@ -244,7 +244,7 @@ exe = EXE(
         print("=" * 70)
         print()
 
-        package_dir = self.dist_dir / "HardwareMonitor_部署包"
+        package_dir = self.dist_dir / "HwMonClient_部署包"
 
         # 创建目录结构
         if package_dir.exists():
@@ -254,10 +254,10 @@ exe = EXE(
         (package_dir / "config").mkdir()
 
         # 复制exe
-        exe_path = self.dist_dir / "HardwareMonitor.exe"
+        exe_path = self.dist_dir / "HwMonClient.exe"
         if exe_path.exists():
             shutil.copy2(exe_path, package_dir)
-            print(f"✓ 已复制: HardwareMonitor.exe")
+            print(f"✓ 已复制: HwMonClient.exe")
 
         # 创建默认配置文件
         default_config = {
@@ -310,7 +310,7 @@ exe = EXE(
             f.write('@echo off\n')
             f.write('chcp 65001 >nul\n')
             f.write('echo 启动配置工具...\n')
-            f.write('HardwareMonitor.exe --config\n')
+            f.write('HwMonClient.exe --config\n')
             f.write('pause\n')
         print(f"✓ 已创建: 启动配置工具.bat")
 
@@ -321,7 +321,7 @@ exe = EXE(
             f.write('chcp 65001 >nul\n')
             f.write('echo 正在安装为开机自启...\n')
             f.write('echo.\n')
-            f.write('HardwareMonitor.exe --install\n')
+            f.write('HwMonClient.exe --install\n')
             f.write('echo.\n')
             f.write('echo 安装完成!程序将在后台运行\n')
             f.write('pause\n')
@@ -350,10 +350,10 @@ exe = EXE(
             f.write('echo.\n')
             f.write('echo 正在卸载...\n')
             f.write('echo.\n')
-            f.write('HardwareMonitor.exe --uninstall\n')
+            f.write('HwMonClient.exe --uninstall\n')
             f.write('echo.\n')
             f.write('echo 如需删除本程序文件,请手动删除:\n')
-            f.write('echo   HardwareMonitor.exe\n')
+            f.write('echo   HwMonClient.exe\n')
             f.write('pause\n')
         print(f"✓ 已创建: 卸载程序.bat")
 
@@ -375,7 +375,7 @@ exe = EXE(
         print("=" * 70)
         print()
         print("部署包内容:")
-        print("  - HardwareMonitor.exe (主程序,含Python环境)")
+        print("  - HwMonClient.exe (主程序,含Python环境)")
         print("  - config/config.json (配置文件,需修改服务器地址)")
         print("  - config/config.example.json (配置示例)")
         print("  - 启动配置工具.bat (配置向导)")
@@ -396,7 +396,7 @@ exe = EXE(
     def _generate_readme(self):
         """生成使用说明"""
         return """================================================================================
-                    硬件监控客户端 - 使用说明
+                    HwMonClient - 使用说明
 ================================================================================
 
 一、系统要求
@@ -407,7 +407,7 @@ exe = EXE(
 
 二、文件说明
 -----------
-HardwareMonitor.exe          - 主程序(已包含Python环境)
+HwMonClient.exe              - 主程序(已包含Python环境)
 config/config.json           - 配置文件(需要修改)
 config/config.example.json   - 配置示例
 启动配置工具.bat             - 图形化配置向导
@@ -425,7 +425,7 @@ config/config.example.json   - 配置示例
   3. 完成!程序会在后台运行
 
 方法2: 手动配置
-  1. 双击 HardwareMonitor.exe 运行
+  1. 双击 HwMonClient.exe 运行
   2. 选择选项4进入配置编辑器
   3. 修改服务器URL为你的服务器地址
   4. 选择选项2安装为开机自启
@@ -451,17 +451,17 @@ config/config.example.json   - 配置示例
 
 五、命令行参数
 -------------
-HardwareMonitor.exe              - 交互模式(显示菜单)
-HardwareMonitor.exe --silent     - 静默运行(后台)
-HardwareMonitor.exe --install    - 安装为开机自启
-HardwareMonitor.exe --config     - 配置编辑器
+HwMonClient.exe                  - 交互模式(显示菜单)
+HwMonClient.exe --silent         - 静默运行(后台)
+HwMonClient.exe --install        - 安装为开机自启
+HwMonClient.exe --config         - 配置编辑器
 
 六、常见问题
 -----------
 
 Q1: 程序运行后没有界面?
 A: 这是正常的,程序设计为后台静默运行。
-   可以在任务管理器中看到HardwareMonitor.exe进程。
+   可以在任务管理器中看到HwMonClient.exe进程。
 
 Q2: 如何确认程序正在运行?
 A: 1. 查看任务管理器中的进程
@@ -476,12 +476,12 @@ A: 1. 检查config.json中的服务器地址是否正确
    5. 查看client.log日志获取详细错误
 
 Q4: 如何停止程序?
-A: 1. 在任务管理器中结束HardwareMonitor.exe进程
+A: 1. 在任务管理器中结束HwMonClient.exe进程
    2. 取消开机自启设置
 
 Q5: 如何更新配置?
 A: 直接编辑config.json文件,然后重启程序即可。
-   或者运行 HardwareMonitor.exe --config 进入配置向导。
+   或者运行 HwMonClient.exe --config 进入配置向导。
 
 Q6: exe文件很大(30-50MB)?
 A: 这是正常的,因为包含了完整的Python环境和所有依赖库。
@@ -556,7 +556,7 @@ A: PyInstaller打包的exe可能被误报。
 
 其他操作:
 --------
-- 查看配置: 双击 HardwareMonitor.exe,选择5
+- 查看配置: 双击 HwMonClient.exe,选择5
 - 修改配置: 双击 "启动配置工具.bat"
 - 卸载程序: 任务管理器结束进程,删除文件夹
 
@@ -596,8 +596,8 @@ A: PyInstaller打包的exe可能被误报。
             print("=" * 70)
             print()
             print("下一步:")
-            print(f"  1. 测试: 运行 dist/HardwareMonitor.exe")
-            print(f"  2. 部署: 复制 dist/HardwareMonitor_部署包 到目标电脑")
+            print(f"  1. 测试: 运行 dist/HwMonClient.exe")
+            print(f"  2. 部署: 复制 dist/HwMonClient_部署包 到目标电脑")
             print(f"  3. 配置: 编辑 config/config.json 修改服务器地址")
             print()
 

@@ -1,12 +1,12 @@
 """
-硬件监控系统服务端
+硬件监控系统服务端 - HwMonServer
 Flask Web应用,提供API和Web管理界面
 支持高并发采集(1000+客户端)
+使用MySQL数据库支持高并发
 """
 
 import os
 import json
-import sqlite3
 import time
 from datetime import datetime
 from flask import Flask, request, jsonify, render_template, send_file, session, redirect, url_for
@@ -19,165 +19,274 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, PatternFill
 import functools
+import pymysql
+from dbutils.pooled_db import PooledDB
 
 app = Flask(__name__)
 CORS(app)
 
+# 加载配置文件
+def load_config():
+    """加载配置文件"""
+    config_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
+    try:
+        with open(config_file, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"警告: 无法加载配置文件 {config_file}: {e}")
+        print("使用默认配置")
+        return {
+            'database': {
+                'host': '192.168.20.17',
+                'port': 3306,
+                'user': 'HwMon',
+                'password': 'kk7cy7SDWDMXC5XQ',
+                'database': 'hwmon',
+                'charset': 'utf8mb4'
+            },
+            'login': {
+                'username': 'xapi',
+                'password': 'Ai78965'
+            },
+            'server': {
+                'port': 5000,
+                'host': '0.0.0.0'
+            },
+            'collect': {
+                'max_workers': 50,
+                'timeout': 15,
+                'retry_times': 0
+            }
+        }
+
+CONFIG = load_config()
+
 # 登录配置
-app.secret_key = 'hardware_monitor_secret_key_2026'  # 用于session加密
-LOGIN_CONFIG = {
+app.secret_key = 'HwMon_secret_key_2026'  # 用于session加密
+LOGIN_CONFIG = CONFIG.get('login', {
     'username': 'xapi',
     'password': 'Ai78965'
+})
+
+# MySQL数据库配置（从配置文件读取）
+db_config = CONFIG.get('database', {})
+MYSQL_CONFIG = {
+    'host': db_config.get('host', '192.168.20.17'),
+    'port': db_config.get('port', 3306),
+    'user': db_config.get('user', 'HwMon'),
+    'password': db_config.get('password', 'kk7cy7SDWDMXC5XQ'),
+    'database': db_config.get('database', 'hwmon'),
+    'charset': db_config.get('charset', 'utf8mb4'),
+    'cursorclass': pymysql.cursors.DictCursor,
+    'init_command': "SET time_zone='+08:00', innodb_lock_wait_timeout=10",  # 设置时区为东八区，锁等待超时10秒
+    'connect_timeout': 10,  # 连接超时10秒
+    'read_timeout': 30,     # 读取超时30秒
+    'write_timeout': 30     # 写入超时30秒
 }
 
-DATABASE = 'hardware_monitor.db'
+# 数据库连接池
+db_pool = None
 
-# 并发采集配置
+# 并发采集配置（从配置文件读取）
+collect_config = CONFIG.get('collect', {})
 COLLECT_CONFIG = {
-    'max_workers': 50,        # 最大并发数(50并发约30秒完成1000台)
-    'timeout': 15,            # 单个客户端请求超时(秒)
-    'retry_times': 0,         # 失败重试次数
+    'max_workers': collect_config.get('max_workers', 50),
+    'timeout': collect_config.get('timeout', 15),
+    'retry_times': collect_config.get('retry_times', 0),
 }
 
 
-def init_db():
-    """初始化数据库"""
-    conn = sqlite3.connect(DATABASE)
-    cursor = conn.cursor()
-
-    # 创建分组表
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS groups (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL UNIQUE,
-            description TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-
-    # 创建客户端表
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS clients (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            client_id TEXT NOT NULL UNIQUE,
-            hostname TEXT,
-            local_ip TEXT,
-            group_id INTEGER,
-            last_report TIMESTAMP,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE SET NULL
-        )
-    ''')
-
-    # 检查并添加local_ip列(兼容旧数据库)
-    try:
-        cursor.execute("ALTER TABLE clients ADD COLUMN local_ip TEXT")
-    except:
-        pass
-
-    # 创建硬件信息历史表
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS hardware_reports (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            client_id TEXT NOT NULL,
-            report_data TEXT,
-            report_type TEXT DEFAULT 'scheduled',
-            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (client_id) REFERENCES clients(client_id) ON DELETE CASCADE
-        )
-    ''')
-
-    # 检查并添加report_type列(兼容旧数据库)
-    try:
-        cursor.execute("ALTER TABLE hardware_reports ADD COLUMN report_type TEXT DEFAULT 'scheduled'")
-    except:
-        pass
-
-    # 创建硬件采集历史表（保留最近10条记录）
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS hardware_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            client_id TEXT NOT NULL,
-            cpu_info TEXT,
-            memory_info TEXT,
-            disk_info TEXT,
-            gpu_info TEXT,
-            snapshot TEXT,
-            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (client_id) REFERENCES clients(client_id) ON DELETE CASCADE
-        )
-    ''')
-
-    # 创建默认分组
-    cursor.execute('INSERT OR IGNORE INTO groups (name, description) VALUES (?, ?)',
-                   ('默认分组', '未分组的客户端'))
-
-    # 创建客户端硬件基准表（首次上报自动创建）
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS client_baselines (
-            client_id TEXT PRIMARY KEY,
-            cpu_snapshot TEXT,
-            gpu_snapshot TEXT,
-            memory_snapshot TEXT,
-            disk_snapshot TEXT,
-            baseline_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (client_id) REFERENCES clients(client_id) ON DELETE CASCADE
-        )
-    ''')
-
-    # 创建告警记录表
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS alert_records (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            client_id TEXT NOT NULL,
-            alert_type TEXT NOT NULL,
-            alert_detail TEXT NOT NULL,
-            resolved INTEGER DEFAULT 0,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (client_id) REFERENCES clients(client_id) ON DELETE CASCADE
-        )
-    ''')
-
-    # 创建邮件配置表（只允许一行）
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS email_config (
-            id INTEGER PRIMARY KEY CHECK (id = 1),
-            smtp_host TEXT NOT NULL DEFAULT 'smtp.qq.com',
-            smtp_port INTEGER NOT NULL DEFAULT 465,
-            smtp_user TEXT NOT NULL DEFAULT '',
-            smtp_password TEXT NOT NULL DEFAULT '',
-            sender_name TEXT DEFAULT '硬件监控系统',
-            recipients TEXT NOT NULL DEFAULT '[]',
-            enabled INTEGER DEFAULT 0
-        )
-    ''')
-    cursor.execute('INSERT OR IGNORE INTO email_config (id) VALUES (1)')
-
-    # 创建告警设置表（配置需要监控的硬件类型）
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS alert_settings (
-            id INTEGER PRIMARY KEY CHECK (id = 1),
-            monitor_cpu INTEGER DEFAULT 1,
-            monitor_gpu INTEGER DEFAULT 1,
-            monitor_memory INTEGER DEFAULT 1,
-            monitor_disk INTEGER DEFAULT 1,
-            monitor_network INTEGER DEFAULT 0,
-            monitor_motherboard INTEGER DEFAULT 0,
-            monitor_bios INTEGER DEFAULT 0,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    cursor.execute('INSERT OR IGNORE INTO alert_settings (id) VALUES (1)')
-
-    conn.commit()
-    conn.close()
+def init_db_pool():
+    """初始化数据库连接池"""
+    global db_pool
+    db_pool = PooledDB(
+        creator=pymysql,
+        maxconnections=100,     # 连接池最大连接数（增加到100支持高并发）
+        mincached=10,           # 初始化时创建的空闲连接数
+        maxcached=30,           # 连接池最多缓存的空闲连接数
+        maxusage=1000,          # 单个连接最多被使用的次数
+        blocking=True,          # 连接池满时是否阻塞等待
+        ping=1,                 # 连接时检查连接是否可用
+        **MYSQL_CONFIG
+    )
+    print("MySQL连接池初始化成功")
+    print("数据库时区: 东八区 (北京时间)")
 
 
 def get_db():
-    """获取数据库连接"""
-    conn = sqlite3.connect(DATABASE)
-    conn.row_factory = sqlite3.Row
-    return conn
+    """从连接池获取数据库连接"""
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            conn = db_pool.connection()
+            # 设置会话时区为东八区（北京时间）
+            cursor = conn.cursor()
+            cursor.execute("SET time_zone='+08:00'")
+            return conn
+        except Exception as e:
+            if attempt < max_retries - 1:
+                print(f'[WARN] 获取数据库连接失败，重试 {attempt + 1}/{max_retries}: {e}')
+                import time
+                time.sleep(0.5)
+            else:
+                raise e
+
+
+def get_db_readonly():
+    """获取只读数据库连接（用于查询操作，避免锁冲突）"""
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            conn = db_pool.connection()
+            cursor = conn.cursor()
+            cursor.execute("SET time_zone='+08:00'")
+            cursor.execute("SET SESSION TRANSACTION READ ONLY")
+            return conn
+        except Exception as e:
+            if attempt < max_retries - 1:
+                print(f'[WARN] 获取只读连接失败，重试 {attempt + 1}/{max_retries}: {e}')
+                import time
+                time.sleep(0.5)
+            else:
+                raise e
+
+
+def init_tables():
+    """初始化数据库表结构"""
+    conn = get_db()
+    try:
+        cursor = conn.cursor()
+        
+        # 设置会话时区为东八区
+        cursor.execute("SET time_zone='+08:00'")
+        
+        # 创建分组表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS `groups` (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                name VARCHAR(255) NOT NULL UNIQUE,
+                description TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        ''')
+
+        # 创建客户端表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS clients (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                client_id VARCHAR(255) NOT NULL UNIQUE,
+                hostname VARCHAR(255),
+                local_ip VARCHAR(45),
+                group_id INT,
+                last_report DATETIME,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (group_id) REFERENCES `groups`(id) ON DELETE SET NULL,
+                INDEX idx_client_id (client_id),
+                INDEX idx_group_id (group_id),
+                INDEX idx_last_report (last_report)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        ''')
+
+        # 创建硬件信息历史表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS hardware_reports (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                client_id VARCHAR(255) NOT NULL,
+                report_data LONGTEXT,
+                report_type VARCHAR(50) DEFAULT 'scheduled',
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_client_id (client_id),
+                INDEX idx_timestamp (timestamp)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        ''')
+
+        # 创建硬件采集历史表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS hardware_history (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                client_id VARCHAR(255) NOT NULL,
+                cpu_info TEXT,
+                memory_info TEXT,
+                disk_info TEXT,
+                gpu_info TEXT,
+                snapshot LONGTEXT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_client_id (client_id),
+                INDEX idx_timestamp (timestamp)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        ''')
+
+        # 创建默认分组
+        cursor.execute('INSERT IGNORE INTO `groups` (name, description) VALUES (%s, %s)',
+                       ('默认分组', '未分组的客户端'))
+
+        # 创建客户端硬件基准表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS client_baselines (
+                client_id VARCHAR(255) PRIMARY KEY,
+                cpu_snapshot TEXT,
+                gpu_snapshot TEXT,
+                memory_snapshot TEXT,
+                disk_snapshot TEXT,
+                baseline_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (client_id) REFERENCES clients(client_id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        ''')
+
+        # 创建告警记录表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS alert_records (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                client_id VARCHAR(255) NOT NULL,
+                alert_type VARCHAR(100) NOT NULL,
+                alert_detail LONGTEXT NOT NULL,
+                resolved TINYINT DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_client_id (client_id),
+                INDEX idx_resolved (resolved),
+                INDEX idx_created_at (created_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        ''')
+
+        # 创建邮件配置表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS email_config (
+                id INT PRIMARY KEY,
+                smtp_host VARCHAR(255) NOT NULL DEFAULT 'smtp.qq.com',
+                smtp_port INT NOT NULL DEFAULT 465,
+                smtp_user VARCHAR(255) NOT NULL DEFAULT '',
+                smtp_password VARCHAR(255) NOT NULL DEFAULT '',
+                sender_name VARCHAR(255) DEFAULT '硬件监控系统',
+                recipients TEXT NOT NULL,
+                enabled TINYINT DEFAULT 0
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        ''')
+        cursor.execute('INSERT IGNORE INTO email_config (id, recipients) VALUES (1, "[]")')
+
+        # 创建告警设置表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS alert_settings (
+                id INT PRIMARY KEY,
+                monitor_cpu TINYINT DEFAULT 1,
+                monitor_gpu TINYINT DEFAULT 1,
+                monitor_memory TINYINT DEFAULT 1,
+                monitor_disk TINYINT DEFAULT 1,
+                monitor_network TINYINT DEFAULT 0,
+                monitor_motherboard TINYINT DEFAULT 0,
+                monitor_bios TINYINT DEFAULT 0,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        ''')
+        cursor.execute('INSERT IGNORE INTO alert_settings (id) VALUES (1)')
+
+        conn.commit()
+        print("数据库表初始化完成")
+    except Exception as e:
+        print(f"数据库初始化失败: {e}")
+        raise
+    finally:
+        conn.close()
+
 
 
 def login_required(f):
@@ -348,7 +457,7 @@ def get_email_config(conn):
 def send_alert_email(client_id, hostname, local_ip, changes):
     """发送硬件变更告警邮件"""
     try:
-        conn = get_db()
+        conn = get_db_readonly()  # 只读查询使用只读连接
         config = get_email_config(conn)
         conn.close()
 
@@ -407,6 +516,70 @@ def send_alert_email(client_id, hostname, local_ip, changes):
         print(f'邮件发送失败: {str(e)}')
         print(traceback.format_exc())
         return False
+
+
+def _check_hardware_changes(cursor, conn, client_id, hostname, local_ip, hardware_info,
+                            cpu_info, gpu_info, mem_info, disk_info):
+    """检查硬件变更（独立事务，不阻塞主流程）"""
+    try:
+        # 检查是否有基准数据
+        cursor.execute('SELECT * FROM client_baselines WHERE client_id = %s', (client_id,))
+        baseline = cursor.fetchone()
+
+        if not baseline:
+            # 首次上报：自动创建基准
+            cursor.execute('''
+                INSERT INTO client_baselines (client_id, cpu_snapshot, gpu_snapshot, memory_snapshot, disk_snapshot)
+                VALUES (%s, %s, %s, %s, %s)
+            ''', (client_id, cpu_info, gpu_info, mem_info, disk_info))
+            conn.commit()
+            print(f'[INFO] 客户端 {client_id} 首次上报，已自动创建基准')
+        else:
+            # 有基准：对比硬件变化
+            # 获取告警设置
+            cursor.execute('SELECT * FROM alert_settings WHERE id = 1')
+            alert_settings_row = cursor.fetchone()
+            alert_settings = dict(alert_settings_row) if alert_settings_row else None
+
+            baseline_snapshots = {
+                'cpu': baseline['cpu_snapshot'],
+                'gpu': baseline['gpu_snapshot'],
+                'memory': baseline['memory_snapshot'],
+                'disk': baseline['disk_snapshot'],
+                'network': json.dumps(hardware_info.get('network', []), ensure_ascii=False) if hardware_info.get('network') else '',
+                'motherboard': json.dumps(hardware_info.get('motherboard', {}), ensure_ascii=False) if hardware_info.get('motherboard') else '',
+                'bios': json.dumps(hardware_info.get('bios', {}), ensure_ascii=False) if hardware_info.get('bios') else ''
+            }
+
+            changes = compare_hardware(baseline_snapshots, hardware_info, alert_settings)
+
+            if changes:
+                # 发现变更：记录告警
+                alert_detail = json.dumps(changes, ensure_ascii=False)
+                cursor.execute('''
+                    INSERT INTO alert_records (client_id, alert_type, alert_detail)
+                    VALUES (%s, %s, %s)
+                ''', (client_id, 'hardware_change', alert_detail))
+                conn.commit()
+
+                print(f'[ALERT] 客户端 {client_id} 检测到硬件变更: {len(changes)} 项')
+
+                # 尝试发送邮件（不阻塞主流程）
+                try:
+                    email_sent = send_alert_email(client_id, hostname, local_ip, changes)
+                    if email_sent:
+                        print(f'[INFO] 已向管理员发送告警邮件')
+                    else:
+                        print(f'[WARN] 告警邮件发送失败（可能未配置或配置错误）')
+                except Exception as e:
+                    print(f'[WARN] 发送邮件异常: {e}')
+    except Exception as e:
+        # 回滚事务
+        try:
+            conn.rollback()
+        except:
+            pass
+        raise e
 
 
 # =================================================================
@@ -513,6 +686,26 @@ def check_login():
 @app.route('/api/report', methods=['POST'])
 def receive_report():
     """接收客户端上报的硬件信息（含基准管理和变更检测）"""
+    # 重试机制：最多重试3次
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            return _process_report(attempt + 1, max_retries)
+        except Exception as e:
+            error_msg = str(e)
+            if 'Lock wait timeout' in error_msg and attempt < max_retries - 1:
+                print(f'[WARN] 数据库锁超时，重试 {attempt + 1}/{max_retries}')
+                import time
+                time.sleep(0.5 * (attempt + 1))  # 递增延迟
+                continue
+            else:
+                import traceback
+                traceback.print_exc()
+                return jsonify({'error': error_msg}), 500
+
+
+def _process_report(attempt, max_retries):
+    """处理客户端上报数据（内部函数）"""
     try:
         data = request.json
         client_id = data.get('client_id')
@@ -527,23 +720,25 @@ def receive_report():
         conn = get_db()
         cursor = conn.cursor()
 
-        # 更新或插入客户端信息
+        # 步骤1: 快速更新客户端信息（单独事务，减少锁持有时间）
+        current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         cursor.execute('''
             INSERT INTO clients (client_id, hostname, local_ip, last_report)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(client_id) DO UPDATE SET
-                hostname = excluded.hostname,
-                local_ip = excluded.local_ip,
-                last_report = excluded.last_report
-        ''', (client_id, hostname, local_ip, datetime.now().isoformat()))
+            VALUES (%s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                hostname = VALUES(hostname),
+                local_ip = VALUES(local_ip),
+                last_report = VALUES(last_report)
+        ''', (client_id, hostname, local_ip, current_time))
+        conn.commit()  # 立即提交，释放锁
 
-        # 保存硬件信息历史记录
+        # 步骤2: 保存硬件报告（单独事务）
         cursor.execute('''
             INSERT INTO hardware_reports (client_id, report_data, report_type)
-            VALUES (?, ?, ?)
+            VALUES (%s, %s, %s)
         ''', (client_id, json.dumps(hardware_info, ensure_ascii=False), report_type))
 
-        # 提取关键硬件指标并存入硬件历史表
+        # 提取关键硬件指标
         cpu_info = json.dumps(hardware_info.get('cpu', []), ensure_ascii=False) if hardware_info.get('cpu') else ''
         mem_info = json.dumps(hardware_info.get('memory', {}), ensure_ascii=False) if hardware_info.get('memory') else ''
         disk_info = json.dumps(hardware_info.get('disk', []), ensure_ascii=False) if hardware_info.get('disk') else ''
@@ -551,109 +746,83 @@ def receive_report():
 
         cursor.execute('''
             INSERT INTO hardware_history (client_id, cpu_info, memory_info, disk_info, gpu_info, snapshot)
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s)
         ''', (client_id, cpu_info, mem_info, disk_info, gpu_info, json.dumps(hardware_info, ensure_ascii=False)))
 
         # 清理历史记录，只保留最近10条
         cursor.execute('''
             DELETE FROM hardware_history
             WHERE id NOT IN (
-                SELECT id FROM hardware_history
-                WHERE client_id = ?
-                ORDER BY timestamp DESC
-                LIMIT 10
+                SELECT id FROM (
+                    SELECT id FROM hardware_history
+                    WHERE client_id = %s
+                    ORDER BY timestamp DESC
+                    LIMIT 10
+                ) AS tmp
             )
-            AND client_id = ?
+            AND client_id = %s
         ''', (client_id, client_id))
+        conn.commit()  # 提交硬件历史相关操作
 
-        # ==================== 硬件变更检测与告警 ====================
-        # 检查是否有基准数据
-        cursor.execute('SELECT * FROM client_baselines WHERE client_id = ?', (client_id,))
-        baseline = cursor.fetchone()
+        # 步骤3: 硬件变更检测（异步处理，不阻塞主流程）
+        try:
+            _check_hardware_changes(cursor, conn, client_id, hostname, local_ip, hardware_info,
+                                    cpu_info, gpu_info, mem_info, disk_info)
+        except Exception as e:
+            # 变更检测失败不影响主流程
+            print(f'[WARN] 硬件变更检测失败: {e}')
 
-        if not baseline:
-            # 首次上报：自动创建基准
-            cursor.execute('''
-                INSERT INTO client_baselines (client_id, cpu_snapshot, gpu_snapshot, memory_snapshot, disk_snapshot)
-                VALUES (?, ?, ?, ?, ?)
-            ''', (
-                client_id,
-                cpu_info,
-                gpu_info,
-                mem_info,
-                disk_info
-            ))
-            print(f'[INFO] 客户端 {client_id} 首次上报，已自动创建基准')
-        else:
-            # 有基准：对比硬件变化
-            # 获取告警设置
-            cursor.execute('SELECT * FROM alert_settings WHERE id = 1')
-            alert_settings_row = cursor.fetchone()
-            alert_settings = dict(alert_settings_row) if alert_settings_row else None
-
-            baseline_snapshots = {
-                'cpu': baseline['cpu_snapshot'],
-                'gpu': baseline['gpu_snapshot'],
-                'memory': baseline['memory_snapshot'],
-                'disk': baseline['disk_snapshot'],
-                'network': json.dumps(hardware_info.get('network', []), ensure_ascii=False) if hardware_info.get('network') else '',
-                'motherboard': json.dumps(hardware_info.get('motherboard', {}), ensure_ascii=False) if hardware_info.get('motherboard') else '',
-                'bios': json.dumps(hardware_info.get('bios', {}), ensure_ascii=False) if hardware_info.get('bios') else ''
-            }
-
-            changes = compare_hardware(baseline_snapshots, hardware_info, alert_settings)
-
-            if changes:
-                # 发现变更：记录告警
-                alert_detail = json.dumps(changes, ensure_ascii=False)
-                cursor.execute('''
-                    INSERT INTO alert_records (client_id, alert_type, alert_detail)
-                    VALUES (?, ?, ?)
-                ''', (client_id, 'hardware_change', alert_detail))
-
-                print(f'[ALERT] 客户端 {client_id} 检测到硬件变更: {len(changes)} 项')
-
-                # 尝试发送邮件
-                email_sent = send_alert_email(client_id, hostname, local_ip, changes)
-                if email_sent:
-                    print(f'[INFO] 已向管理员发送告警邮件')
-                else:
-                    print(f'[WARN] 告警邮件发送失败（可能未配置或配置错误）')
-
-        conn.commit()
         conn.close()
-
         return jsonify({'status': 'success', 'message': '接收成功'})
 
     except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
+        raise e  # 抛出异常，由外层重试机制处理
 
 
 @app.route('/api/clients', methods=['GET'])
 @login_required
 def get_clients():
-    """获取所有客户端列表"""
+    """获取所有客户端列表（支持排序和过滤）"""
     try:
         group_id = request.args.get('group_id')
-        conn = get_db()
+        sort_by = request.args.get('sort_by', 'last_report')  # 默认按最后上报时间排序
+        order = request.args.get('order', 'desc')  # 默认降序
+        
+        conn = get_db_readonly()  # 使用只读连接避免锁冲突
         cursor = conn.cursor()
 
-        if group_id:
-            cursor.execute('''
+        # 验证排序字段
+        valid_sort_fields = ['hostname', 'local_ip', 'group_name', 'last_report', 'created_at']
+        if sort_by not in valid_sort_fields:
+            sort_by = 'last_report'
+        
+        # 验证排序方向
+        order = 'DESC' if order.lower() == 'desc' else 'ASC'
+        
+        # 构建查询
+        if group_id == 'ungrouped':
+            # 查询未分组的客户端
+            cursor.execute(f'''
                 SELECT c.*, g.name as group_name
                 FROM clients c
-                LEFT JOIN groups g ON c.group_id = g.id
-                WHERE c.group_id = ?
-                ORDER BY c.last_report DESC
+                LEFT JOIN `groups` g ON c.group_id = g.id
+                WHERE c.group_id IS NULL
+                ORDER BY c.{sort_by} {order}
+            ''')
+        elif group_id:
+            cursor.execute(f'''
+                SELECT c.*, g.name as group_name
+                FROM clients c
+                LEFT JOIN `groups` g ON c.group_id = g.id
+                WHERE c.group_id = %s
+                ORDER BY c.{sort_by} {order}
             ''', (group_id,))
         else:
-            cursor.execute('''
+            cursor.execute(f'''
                 SELECT c.*, g.name as group_name
                 FROM clients c
-                LEFT JOIN groups g ON c.group_id = g.id
-                ORDER BY c.last_report DESC
+                LEFT JOIN `groups` g ON c.group_id = g.id
+                ORDER BY c.{sort_by} {order}
             ''')
 
         clients = [dict(row) for row in cursor.fetchall()]
@@ -677,8 +846,8 @@ def get_client_detail(client_id):
         cursor.execute('''
             SELECT c.*, g.name as group_name
             FROM clients c
-            LEFT JOIN groups g ON c.group_id = g.id
-            WHERE c.client_id = ?
+            LEFT JOIN `groups` g ON c.group_id = g.id
+            WHERE c.client_id = %s
         ''', (client_id,))
 
         client = cursor.fetchone()
@@ -692,7 +861,7 @@ def get_client_detail(client_id):
         cursor.execute('''
             SELECT report_data, report_type, timestamp
             FROM hardware_reports
-            WHERE client_id = ?
+            WHERE client_id = %s
             ORDER BY timestamp DESC
             LIMIT 1
         ''', (client_id,))
@@ -716,11 +885,11 @@ def get_client_detail(client_id):
 def collect_from_client(client_id):
     """主动采集单个客户端"""
     try:
-        conn = get_db()
+        conn = get_db_readonly()  # 只读查询使用只读连接
         cursor = conn.cursor()
 
         # 获取客户端信息
-        cursor.execute('SELECT local_ip FROM clients WHERE client_id = ?', (client_id,))
+        cursor.execute('SELECT local_ip FROM clients WHERE client_id = %s', (client_id,))
         client = cursor.fetchone()
 
         if not client:
@@ -774,7 +943,7 @@ def collect_all_clients():
         COLLECT_CONFIG['max_workers'] = max_workers
         COLLECT_CONFIG['timeout'] = timeout
 
-        conn = get_db()
+        conn = get_db_readonly()  # 只读查询使用只读连接
         cursor = conn.cursor()
 
         cursor.execute('SELECT client_id, local_ip FROM clients')
@@ -845,12 +1014,12 @@ def collect_all_clients():
 def get_groups():
     """获取所有分组"""
     try:
-        conn = get_db()
+        conn = get_db_readonly()  # 只读查询使用只读连接
         cursor = conn.cursor()
 
         cursor.execute('''
             SELECT g.*, COUNT(c.id) as client_count
-            FROM groups g
+            FROM `groups` g
             LEFT JOIN clients c ON g.id = c.group_id
             GROUP BY g.id
             ORDER BY g.name
@@ -880,7 +1049,7 @@ def create_group():
         conn = get_db()
         cursor = conn.cursor()
 
-        cursor.execute('INSERT INTO groups (name, description) VALUES (?, ?)',
+        cursor.execute('INSERT INTO `groups` (name, description) VALUES (%s, %s)',
                        (name, description))
 
         conn.commit()
@@ -907,7 +1076,7 @@ def update_group(group_id):
         conn = get_db()
         cursor = conn.cursor()
 
-        cursor.execute('UPDATE groups SET name = ?, description = ? WHERE id = ?',
+        cursor.execute('UPDATE `groups` SET name = %s, description = %s WHERE id = %s',
                        (name, description, group_id))
 
         conn.commit()
@@ -928,13 +1097,13 @@ def delete_group(group_id):
         cursor = conn.cursor()
 
         # 检查是否是默认分组
-        cursor.execute('SELECT name FROM groups WHERE id = ?', (group_id,))
+        cursor.execute('SELECT name FROM `groups` WHERE id = %s', (group_id,))
         group = cursor.fetchone()
         if group and group['name'] == '默认分组':
             conn.close()
             return jsonify({'error': '不能删除默认分组'}), 400
 
-        cursor.execute('DELETE FROM groups WHERE id = ?', (group_id,))
+        cursor.execute('DELETE FROM `groups` WHERE id = %s', (group_id,))
         conn.commit()
         conn.close()
 
@@ -955,7 +1124,7 @@ def assign_client_to_group(client_id):
         conn = get_db()
         cursor = conn.cursor()
 
-        cursor.execute('UPDATE clients SET group_id = ? WHERE client_id = ?',
+        cursor.execute('UPDATE clients SET group_id = %s WHERE client_id = %s',
                        (group_id, client_id))
 
         conn.commit()
@@ -972,10 +1141,10 @@ def assign_client_to_group(client_id):
 def delete_client(client_id):
     """删除客户端"""
     try:
-        conn = get_db()
+        conn = get_db()  # 写操作使用普通连接
         cursor = conn.cursor()
 
-        cursor.execute('DELETE FROM clients WHERE client_id = ?', (client_id,))
+        cursor.execute('DELETE FROM clients WHERE client_id = %s', (client_id,))
         conn.commit()
         conn.close()
 
@@ -991,7 +1160,7 @@ def export_csv():
     """导出所有客户端信息为CSV"""
     try:
         group_id = request.args.get('group_id')
-        conn = get_db()
+        conn = get_db_readonly()  # 只读查询使用只读连接
         cursor = conn.cursor()
 
         if group_id:
@@ -999,8 +1168,8 @@ def export_csv():
                 SELECT c.client_id, c.hostname, c.local_ip, g.name as group_name,
                        c.last_report, c.created_at
                 FROM clients c
-                LEFT JOIN groups g ON c.group_id = g.id
-                WHERE c.group_id = ?
+                LEFT JOIN `groups` g ON c.group_id = g.id
+                WHERE c.group_id = %s
                 ORDER BY c.last_report DESC
             ''', (group_id,))
         else:
@@ -1008,7 +1177,7 @@ def export_csv():
                 SELECT c.client_id, c.hostname, c.local_ip, g.name as group_name,
                        c.last_report, c.created_at
                 FROM clients c
-                LEFT JOIN groups g ON c.group_id = g.id
+                LEFT JOIN `groups` g ON c.group_id = g.id
                 ORDER BY c.last_report DESC
             ''')
 
@@ -1048,22 +1217,22 @@ def export_json():
     """导出所有客户端信息为JSON"""
     try:
         group_id = request.args.get('group_id')
-        conn = get_db()
+        conn = get_db_readonly()  # 只读查询使用只读连接
         cursor = conn.cursor()
 
         if group_id:
             cursor.execute('''
                 SELECT c.*, g.name as group_name
                 FROM clients c
-                LEFT JOIN groups g ON c.group_id = g.id
-                WHERE c.group_id = ?
+                LEFT JOIN `groups` g ON c.group_id = g.id
+                WHERE c.group_id = %s
                 ORDER BY c.last_report DESC
             ''', (group_id,))
         else:
             cursor.execute('''
                 SELECT c.*, g.name as group_name
                 FROM clients c
-                LEFT JOIN groups g ON c.group_id = g.id
+                LEFT JOIN `groups` g ON c.group_id = g.id
                 ORDER BY c.last_report DESC
             ''')
 
@@ -1074,7 +1243,7 @@ def export_json():
             cursor.execute('''
                 SELECT report_data, report_type, timestamp
                 FROM hardware_reports
-                WHERE client_id = ?
+                WHERE client_id = %s
                 ORDER BY timestamp DESC
                 LIMIT 1
             ''', (client['client_id'],))
@@ -1106,18 +1275,18 @@ def export_excel():
         group_id = request.args.get('group_id')
         client_ids_param = request.args.get('client_ids')  # 逗号分隔的client_id列表
 
-        conn = get_db()
+        conn = get_db_readonly()  # 只读查询使用只读连接
         cursor = conn.cursor()
 
         # 构建查询
         if client_ids_param:
             client_ids = [cid.strip() for cid in client_ids_param.split(',') if cid.strip()]
-            placeholders = ','.join(['?' for _ in client_ids])
+            placeholders = ','.join(['%s' for _ in client_ids])
             cursor.execute(f'''
                 SELECT c.client_id, c.hostname, c.local_ip, g.name as group_name,
                        c.last_report, c.created_at
                 FROM clients c
-                LEFT JOIN groups g ON c.group_id = g.id
+                LEFT JOIN `groups` g ON c.group_id = g.id
                 WHERE c.client_id IN ({placeholders})
                 ORDER BY c.last_report DESC
             ''', client_ids)
@@ -1126,8 +1295,8 @@ def export_excel():
                 SELECT c.client_id, c.hostname, c.local_ip, g.name as group_name,
                        c.last_report, c.created_at
                 FROM clients c
-                LEFT JOIN groups g ON c.group_id = g.id
-                WHERE c.group_id = ?
+                LEFT JOIN `groups` g ON c.group_id = g.id
+                WHERE c.group_id = %s
                 ORDER BY c.last_report DESC
             ''', (group_id,))
         else:
@@ -1135,7 +1304,7 @@ def export_excel():
                 SELECT c.client_id, c.hostname, c.local_ip, g.name as group_name,
                        c.last_report, c.created_at
                 FROM clients c
-                LEFT JOIN groups g ON c.group_id = g.id
+                LEFT JOIN `groups` g ON c.group_id = g.id
                 ORDER BY c.last_report DESC
             ''')
 
@@ -1168,7 +1337,7 @@ def export_excel():
             # 获取最新硬件信息
             cursor.execute('''
                 SELECT report_data FROM hardware_reports
-                WHERE client_id = ? ORDER BY timestamp DESC LIMIT 1
+                WHERE client_id = %s ORDER BY timestamp DESC LIMIT 1
             ''', (client_id,))
             report = cursor.fetchone()
 
@@ -1258,9 +1427,9 @@ def batch_assign_group():
         conn = get_db()
         cursor = conn.cursor()
 
-        placeholders = ','.join(['?' for _ in client_ids])
+        placeholders = ','.join(['%s' for _ in client_ids])
         cursor.execute(f'''
-            UPDATE clients SET group_id = ?
+            UPDATE clients SET group_id = %s
             WHERE client_id IN ({placeholders})
         ''', [group_id] + client_ids)
 
@@ -1287,7 +1456,7 @@ def get_client_history(client_id):
         cursor = conn.cursor()
 
         # 验证客户端存在
-        cursor.execute('SELECT client_id FROM clients WHERE client_id = ?', (client_id,))
+        cursor.execute('SELECT client_id FROM clients WHERE client_id = %s', (client_id,))
         if not cursor.fetchone():
             conn.close()
             return jsonify({'error': '客户端不存在'}), 404
@@ -1296,7 +1465,7 @@ def get_client_history(client_id):
         cursor.execute('''
             SELECT cpu_info, memory_info, disk_info, gpu_info, snapshot, timestamp
             FROM hardware_history
-            WHERE client_id = ?
+            WHERE client_id = %s
             ORDER BY timestamp DESC
             LIMIT 10
         ''', (client_id,))
@@ -1334,7 +1503,7 @@ def batch_delete_clients():
         conn = get_db()
         cursor = conn.cursor()
 
-        placeholders = ','.join(['?' for _ in client_ids])
+        placeholders = ','.join(['%s' for _ in client_ids])
         cursor.execute(f'DELETE FROM clients WHERE client_id IN ({placeholders})', client_ids)
         affected = cursor.rowcount
         conn.commit()
@@ -1358,7 +1527,7 @@ def get_client_baseline(client_id):
         conn = get_db()
         cursor = conn.cursor()
 
-        cursor.execute('SELECT * FROM client_baselines WHERE client_id = ?', (client_id,))
+        cursor.execute('SELECT * FROM client_baselines WHERE client_id = %s', (client_id,))
         baseline = cursor.fetchone()
 
         if not baseline:
@@ -1387,7 +1556,7 @@ def set_client_baseline(client_id):
         cursor = conn.cursor()
 
         # 验证客户端存在
-        cursor.execute('SELECT client_id FROM clients WHERE client_id = ?', (client_id,))
+        cursor.execute('SELECT client_id FROM clients WHERE client_id = %s', (client_id,))
         if not cursor.fetchone():
             conn.close()
             return jsonify({'error': '客户端不存在'}), 404
@@ -1395,7 +1564,7 @@ def set_client_baseline(client_id):
         # 获取最新的硬件报告
         cursor.execute('''
             SELECT report_data FROM hardware_reports
-            WHERE client_id = ? ORDER BY timestamp DESC LIMIT 1
+            WHERE client_id = %s ORDER BY timestamp DESC LIMIT 1
         ''', (client_id,))
         report = cursor.fetchone()
 
@@ -1414,12 +1583,12 @@ def set_client_baseline(client_id):
         # 插入或更新基准
         cursor.execute('''
             INSERT INTO client_baselines (client_id, cpu_snapshot, gpu_snapshot, memory_snapshot, disk_snapshot)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(client_id) DO UPDATE SET
-                cpu_snapshot = excluded.cpu_snapshot,
-                gpu_snapshot = excluded.gpu_snapshot,
-                memory_snapshot = excluded.memory_snapshot,
-                disk_snapshot = excluded.disk_snapshot,
+            VALUES (%s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                cpu_snapshot = VALUES(cpu_snapshot),
+                gpu_snapshot = VALUES(gpu_snapshot),
+                memory_snapshot = VALUES(memory_snapshot),
+                disk_snapshot = VALUES(disk_snapshot),
                 baseline_timestamp = CURRENT_TIMESTAMP
         ''', (client_id, cpu_info, gpu_info, mem_info, disk_info))
 
@@ -1446,12 +1615,12 @@ def get_client_alerts(client_id):
             SELECT a.*, c.hostname, c.local_ip
             FROM alert_records a
             LEFT JOIN clients c ON a.client_id = c.client_id
-            WHERE a.client_id = ?
+            WHERE a.client_id = %s
         '''
         params = [client_id]
 
         if resolved is not None:
-            query += ' AND a.resolved = ?'
+            query += ' AND a.resolved = %s'
             params.append(1 if resolved == 'true' else 0)
 
         query += ' ORDER BY a.created_at DESC'
@@ -1480,7 +1649,7 @@ def get_all_alerts():
         per_page = int(request.args.get('per_page', 20))
         resolved = request.args.get('resolved')  # 'true' or 'false' or None
 
-        conn = get_db()
+        conn = get_db_readonly()  # 只读查询使用只读连接
         cursor = conn.cursor()
 
         query = '''
@@ -1492,7 +1661,7 @@ def get_all_alerts():
         params = []
 
         if resolved is not None:
-            query += ' AND a.resolved = ?'
+            query += ' AND a.resolved = %s'
             params.append(1 if resolved == 'true' else 0)
 
         # 获取总数
@@ -1501,7 +1670,7 @@ def get_all_alerts():
         total = cursor.fetchone()[0]
 
         # 分页查询
-        query += ' ORDER BY a.created_at DESC LIMIT ? OFFSET ?'
+        query += ' ORDER BY a.created_at DESC LIMIT %s OFFSET %s'
         params.extend([per_page, (page - 1) * per_page])
 
         cursor.execute(query, params)
@@ -1536,7 +1705,7 @@ def resolve_alert(alert_id):
         conn = get_db()
         cursor = conn.cursor()
 
-        cursor.execute('UPDATE alert_records SET resolved = 1 WHERE id = ?', (alert_id,))
+        cursor.execute('UPDATE alert_records SET resolved = 1 WHERE id = %s', (alert_id,))
 
         if cursor.rowcount == 0:
             conn.close()
@@ -1565,7 +1734,7 @@ def batch_resolve_alerts():
         conn = get_db()
         cursor = conn.cursor()
 
-        placeholders = ','.join(['?' for _ in alert_ids])
+        placeholders = ','.join(['%s' for _ in alert_ids])
         cursor.execute(f'UPDATE alert_records SET resolved = 1 WHERE id IN ({placeholders})', alert_ids)
         affected = cursor.rowcount
 
@@ -1587,7 +1756,7 @@ def batch_resolve_alerts():
 def get_email_config_api():
     """获取邮件配置"""
     try:
-        conn = get_db()
+        conn = get_db_readonly()  # 只读查询使用只读连接
         config = get_email_config(conn)
         conn.close()
 
@@ -1625,13 +1794,13 @@ def update_email_config():
 
         cursor.execute('''
             UPDATE email_config SET
-                smtp_host = ?,
-                smtp_port = ?,
-                smtp_user = ?,
-                smtp_password = ?,
-                sender_name = ?,
-                recipients = ?,
-                enabled = ?
+                smtp_host = %s,
+                smtp_port = %s,
+                smtp_user = %s,
+                smtp_password = %s,
+                sender_name = %s,
+                recipients = %s,
+                enabled = %s
             WHERE id = 1
         ''', (
             data.get('smtp_host', 'smtp.qq.com'),
@@ -1712,7 +1881,7 @@ def test_email_config():
 def get_alert_settings():
     """获取告警设置"""
     try:
-        conn = get_db()
+        conn = get_db_readonly()  # 只读查询使用只读连接
         cursor = conn.cursor()
         cursor.execute('SELECT * FROM alert_settings WHERE id = 1')
         row = cursor.fetchone()
@@ -1747,13 +1916,13 @@ def update_alert_settings():
 
         cursor.execute('''
             UPDATE alert_settings SET
-                monitor_cpu = ?,
-                monitor_gpu = ?,
-                monitor_memory = ?,
-                monitor_disk = ?,
-                monitor_network = ?,
-                monitor_motherboard = ?,
-                monitor_bios = ?,
+                monitor_cpu = %s,
+                monitor_gpu = %s,
+                monitor_memory = %s,
+                monitor_disk = %s,
+                monitor_network = %s,
+                monitor_motherboard = %s,
+                monitor_bios = %s,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = 1
         ''', (
@@ -1790,7 +1959,11 @@ def get_collect_config():
 
 
 if __name__ == '__main__':
-    init_db()
+    # 初始化数据库连接池
+    init_db_pool()
+    # 初始化表结构
+    init_tables()
+    
     print("=" * 60)
     print("硬件监控系统服务端启动")
     print("访问地址: http://localhost:5000")

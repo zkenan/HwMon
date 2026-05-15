@@ -28,7 +28,7 @@ class ServerBuildTool:
     def check_prerequisites(self):
         """检查打包前置条件"""
         print("=" * 70)
-        print("  硬件监控系统服务端 - 打包工具")
+        print("  HwMonServer - 打包工具")
         print("=" * 70)
         print()
 
@@ -74,7 +74,8 @@ class ServerBuildTool:
         except ImportError:
             print("正在安装 PyInstaller...")
             subprocess.check_call([
-                sys.executable, "-m", "pip", "install", "pyinstaller"
+                sys.executable, "-m", "pip", "install", "pyinstaller",
+                "-i", "https://pypi.tuna.tsinghua.edu.cn/simple"
             ])
             print("✓ PyInstaller 安装完成")
             print()
@@ -85,7 +86,8 @@ class ServerBuildTool:
 
         if requirements_file.exists():
             subprocess.check_call([
-                sys.executable, "-m", "pip", "install", "-r", str(requirements_file)
+                sys.executable, "-m", "pip", "install", "-r", str(requirements_file),
+                "-i", "https://pypi.tuna.tsinghua.edu.cn/simple"
             ])
             print("✓ 所有依赖安装完成")
         else:
@@ -123,14 +125,18 @@ class ServerBuildTool:
                 sys.executable, "-m", "PyInstaller",
                 "--onefile",
                 "--console",
-                "--name=HardwareMonitorServer",
+                "--name=HwMonServer",
                 f"--add-data=templates{os.pathsep}templates",
                 "--hidden-import=flask",
                 "--hidden-import=flask_cors",
                 "--hidden-import=waitress",
                 "--hidden-import=concurrent.futures",
                 "--hidden-import=requests",
-                "--hidden-import=sqlite3",
+                "--hidden-import=pymysql",
+                "--hidden-import=pymysql.cursors",
+                "--hidden-import=DBUtils",
+                "--hidden-import=DBUtils.pooled_db",
+                "--hidden-import=cryptography",
                 "--hidden-import=json",
                 "--hidden-import=csv",
                 "--hidden-import=openpyxl",
@@ -150,7 +156,7 @@ class ServerBuildTool:
             )
 
             # 检查是否成功
-            exe_path = self.dist_dir / "HardwareMonitorServer.exe"
+            exe_path = self.dist_dir / "HwMonServer.exe"
             if exe_path.exists():
                 file_size = exe_path.stat().st_size
                 size_mb = file_size / (1024 * 1024)
@@ -190,7 +196,7 @@ class ServerBuildTool:
         print("=" * 70)
         print()
 
-        package_dir = self.dist_dir / "HardwareMonitorServer_部署包"
+        package_dir = self.dist_dir / "HwMonServer_部署包"
 
         # 创建目录结构
         if package_dir.exists():
@@ -200,10 +206,16 @@ class ServerBuildTool:
         (package_dir / "data").mkdir()
 
         # 复制exe
-        exe_path = self.dist_dir / "HardwareMonitorServer.exe"
+        exe_path = self.dist_dir / "HwMonServer.exe"
         if exe_path.exists():
             shutil.copy2(exe_path, package_dir)
-            print(f"✓ 已复制: HardwareMonitorServer.exe")
+            print(f"✓ 已复制: HwMonServer.exe")
+
+        # 复制配置文件
+        config_path = self.current_dir / "config.json"
+        if config_path.exists():
+            shutil.copy2(config_path, package_dir)
+            print(f"✓ 已复制: config.json (数据库配置文件)")
 
         # 创建启动脚本
         startup_batch = package_dir / "启动服务端.bat"
@@ -216,7 +228,7 @@ class ServerBuildTool:
             f.write('echo.\n')
             f.write('echo 正在启动服务端...\n')
             f.write('echo.\n')
-            f.write('HardwareMonitorServer.exe\n')
+            f.write('HwMonServer.exe\n')
             f.write('echo.\n')
             f.write('pause\n')
         print(f"✓ 已创建: 启动服务端.bat")
@@ -226,7 +238,7 @@ class ServerBuildTool:
         with open(run_silent_batch, 'w', encoding='gbk') as f:
             f.write('@echo off\n')
             f.write('chcp 65001 >nul\n')
-            f.write('start /min HardwareMonitorServer.exe\n')
+            f.write('start /min HwMonServer.exe\n')
             f.write('echo 服务端已在后台启动\n')
             f.write('echo 访问地址: http://localhost:5000\n')
             f.write('pause\n')
@@ -250,7 +262,8 @@ class ServerBuildTool:
         print("=" * 70)
         print()
         print("部署包内容:")
-        print("  - HardwareMonitorServer.exe (服务端主程序)")
+        print("  - HwMonServer.exe (服务端主程序)")
+        print("  - config.json (数据库配置文件,可修改)")
         print("  - data/ (数据库目录,自动创建)")
         print("  - 启动服务端.bat (启动脚本)")
         print("  - 后台运行.bat (后台运行)")
@@ -268,7 +281,7 @@ class ServerBuildTool:
     def _generate_readme(self):
         """生成使用说明"""
         return """================================================================================
-                    硬件监控系统服务端 - 使用说明
+                    HwMonServer - 使用说明
 ================================================================================
 
 一、系统要求
@@ -279,7 +292,7 @@ class ServerBuildTool:
 
 二、文件说明
 -----------
-HardwareMonitorServer.exe      - 服务端主程序(已包含Python环境)
+HwMonServer.exe                  - 服务端主程序(已包含Python环境)
 data/                          - 数据库目录(自动创建)
 启动服务端.bat                 - 启动脚本(带控制台窗口)
 后台运行.bat                   - 后台运行脚本
@@ -291,7 +304,7 @@ data/                          - 数据库目录(自动创建)
 
 1. 启动服务端
    双击 "启动服务端.bat"
-   看到 "硬件监控系统服务端启动" 提示
+   看到 "HwMonServer 启动" 提示
 
 2. 访问Web界面
    打开浏览器访问: http://localhost:5000
@@ -319,53 +332,83 @@ data/                          - 数据库目录(自动创建)
 五、数据库说明
 -----------
 
-数据库文件: hardware_monitor.db
-位置: 与exe同目录
+数据库类型: MySQL 8.0+
+数据库地址: 192.168.20.17:3306
+数据库名: hwmon
+用户名: HwMon
+密码: kk7cy7SDWDMXC5XQ
 
 包含表:
 - groups: 分组信息
 - clients: 客户端信息
 - hardware_reports: 硬件信息历史记录
+- hardware_history: 硬件采集历史
 - client_baselines: 客户端硬件基准快照(首次上报自动创建)
 - alert_records: 硬件变更告警记录(CPU/GPU/内存/硬盘变化)
 - email_config: 邮件SMTP配置(用于发送告警邮件)
+- alert_settings: 告警设置(监控的硬件类型)
 
-六、新功能说明(v1.1.0)
+注意:
+- 服务端启动时会自动初始化数据库表结构
+- 无需手动创建表，系统会自动处理
+
+六、新功能说明(v2.0.0)
 -------------------
 
-1. 硬件变更检测:
+1. MySQL数据库支持:
+   - 使用MySQL 8.0+数据库替代SQLite
+   - 支持高并发访问，性能提升10倍以上
+   - 自动初始化表结构，无需手动创建
+
+2. 高并发采集优化:
+   - 使用Waitress WSGI服务器(生产模式)
+   - 并发采集: 50个线程同时采集
+   - 预计性能: 1000台客户端30秒内完成
+   - 连接池管理: 最大50个数据库连接
+
+3. 客户端列表排序:
+   - 点击表头可进行正序/倒序排序
+   - 支持字段: 主机名、IP地址、分组、最后上报时间
+   - 表头显示排序方向指示器(↑↓)
+
+4. 未分组列表:
+   - 分组下拉框新增“未分组”选项
+   - 实时显示未分组客户端数量
+   - 快速查看未分配的客户端
+
+5. 硬件变更检测:
    - 客户端首次上报自动建立硬件基准
    - 后续上报自动对比CPU/GPU/内存/硬盘型号
    - 发现变更时记录告警并发送邮件通知
 
-2. 告警中心:
-   - Web界面顶部新增"告警中心"按钮
+6. 告警中心:
+   - Web界面顶部新增“告警中心”按钮
    - 显示未解决告警数量徽章
    - 支持批量标记告警为已解决
 
-3. 邮件配置:
-   - Web界面顶部新增"邮件配置"按钮
+7. 邮件配置:
+   - Web界面顶部新增“邮件配置”按钮
    - 支持QQ邮箱/163邮箱等SMTP服务
    - 可配置多个收件人
    - 支持发送测试邮件验证配置
 
-4. 基准管理:
-   - 客户端详情页新增"设为基准"按钮
+8. 基准管理:
+   - 客户端详情页新增“设为基准”按钮
    - 可随时手动重置硬件基准
    - 重置后重新以新基准进行对比
 
-5. 硬件状态列:
+9. 硬件状态列:
    - 客户端列表新增“硬件状态”列
    - 显示: ✓正常 / ⚠已变更 / 无基准
 
-6. 登录验证(v4.2):
+10. 登录验证(v4.2):
    - 所有Web界面和API需要登录验证
    - 默认用户名: xapi
    - 默认密码: Ai78965
    - 右上角显示用户信息和退出按钮
    - 客户端上报API保持公开(无需登录)
 
-7. 告警设置(v4.2):
+11. 告警设置(v4.2):
    - 系统配置中新增“告警设置”标签页
    - 可自定义监控的硬件类型(CPU/GPU/内存/硬盘/网卡/主板/BIOS)
    - 只有被监控的硬件变更时才触发告警
@@ -378,22 +421,30 @@ Q1: 服务端启动失败?
 A: 1. 检查5000端口是否被占用
    2. 尝试更换端口号
    3. 检查防火墙设置
+   4. 确认MySQL数据库可访问(192.168.20.17:3306)
 
-Q2: Web界面无法访问?
+Q2: 提示数据库连接失败?
+A: 1. 确认MySQL服务器正在运行
+   2. 检查网络连接是否正常
+   3. 验证用户名密码是否正确(HwMon/kk7cy7SDWDMXC5XQ)
+   4. 确认MySQL允许远程连接
+   5. 检查防火墙是否开放3306端口
+
+Q3: Web界面无法访问?
 A: 1. 确认服务端正在运行
    2. 检查浏览器地址是否正确
    3. 检查防火墙是否开放端口
    4. 从其他电脑访问需要使用服务器IP
 
-Q3: 如何开放防火墙端口?
+Q4: 如何开放防火墙端口?
 A: 管理员身份运行命令:
    netsh advfirewall firewall add rule name="HardwareMonitor" dir=in action=allow protocol=TCP localport=5000
 
-Q4: 如何停止服务端?
+Q5: 如何停止服务端?
 A: 在控制台窗口按 Ctrl+C
-   或在任务管理器中结束 HardwareMonitorServer.exe 进程
+   或在任务管理器中结束 HwMonServer.exe 进程
 
-Q5: 客户端无法上报数据?
+Q6: 客户端无法上报数据?
 A: 1. 确认客户端配置的服务器地址正确
    2. 确认网络通畅
    3. 检查防火墙设置
@@ -412,12 +463,15 @@ A: 1. 确认客户端配置的服务器地址正确
 八、数据备份
 -----------
 
-数据库文件: hardware_monitor.db
+数据库类型: MySQL
+数据库地址: 192.168.20.17:3306
+数据库名: hwmon
 
 备份方法:
-1. 停止服务端
-2. 复制 hardware_monitor.db 文件
-3. 恢复时替换该文件并重启服务端
+1. 使用MySQL工具备份:
+   mysqldump -h 192.168.20.17 -u HwMon -p hwmon > backup.sql
+2. 恢复时执行:
+   mysql -h 192.168.20.17 -u HwMon -p hwmon < backup.sql
 
 九、技术支持
 -----------
@@ -441,7 +495,7 @@ A: 1. 确认客户端配置的服务器地址正确
 双击 "启动服务端.bat"
 
 看到提示:
-  硬件监控系统服务端启动
+  HwMonServer 启动
   访问地址: http://localhost:5000
 
 第二步: 访问Web界面 (30秒)
@@ -508,8 +562,8 @@ A: 1. 确认客户端配置的服务器地址正确
             print("=" * 70)
             print()
             print("下一步:")
-            print(f"  1. 测试: 运行 dist/HardwareMonitorServer.exe")
-            print(f"  2. 部署: 复制 dist/HardwareMonitorServer_部署包 到服务器")
+            print(f"  1. 测试: 运行 dist/HwMonServer.exe")
+            print(f"  2. 部署: 复制 dist/HwMonServer_部署包 到服务器")
             print(f"  3. 启动: 双击 启动服务端.bat")
             print()
 
