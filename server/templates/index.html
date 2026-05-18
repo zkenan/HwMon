@@ -429,6 +429,27 @@
                 <!-- 告警设置 Tab -->
                 <div class="tab-content" id="tabAlertSettings">
                     <form id="alertSettingsForm">
+                        <!-- 总开关区域 -->
+                        <div style="background:#f7fafc;padding:20px;border-radius:10px;margin-bottom:20px;">
+                            <h4 style="margin-top:0;margin-bottom:15px;color:#2d3748;">⚙️ 功能开关</h4>
+                            <div style="display:grid;grid-template-columns:repeat(2, 1fr);gap:15px;">
+                                <label style="display:flex;align-items:center;padding:15px;background:white;border:2px solid #e2e8f0;border-radius:8px;cursor:pointer;transition:all 0.3s;" onmouseover="this.style.borderColor='#667eea'" onmouseout="this.style.borderColor='#e2e8f0'">
+                                    <input type="checkbox" id="alertEnabled" style="margin-right:12px;width:20px;height:20px;">
+                                    <div>
+                                        <div style="font-weight:600;font-size:15px;">🔔 告警记录</div>
+                                        <div style="font-size:13px;color:#718096;margin-top:4px;">开启后，硬件变更会记录到告警列表</div>
+                                    </div>
+                                </label>
+                                <label style="display:flex;align-items:center;padding:15px;background:white;border:2px solid #e2e8f0;border-radius:8px;cursor:pointer;transition:all 0.3s;" onmouseover="this.style.borderColor='#667eea'" onmouseout="this.style.borderColor='#e2e8f0'">
+                                    <input type="checkbox" id="emailEnabled" style="margin-right:12px;width:20px;height:20px;">
+                                    <div>
+                                        <div style="font-weight:600;font-size:15px;">📧 邮件通知</div>
+                                        <div style="font-size:13px;color:#718096;margin-top:4px;">开启后，硬件变更会发送邮件（需先配置邮件）</div>
+                                    </div>
+                                </label>
+                            </div>
+                        </div>
+
                         <p style="margin-bottom:15px;color:#718096;">选择需要监控变更的硬件类型（勾选后，当该硬件发生变化时会触发告警）：</p>
                         <div style="display:grid;grid-template-columns:repeat(2, 1fr);gap:15px;margin-bottom:20px;">
                             <label style="display:flex;align-items:center;padding:12px;border:1px solid #e2e8f0;border-radius:8px;cursor:pointer;transition:all 0.3s;" onmouseover="this.style.background='#f7fafc'" onmouseout="this.style.background='white'">
@@ -1412,6 +1433,8 @@
                 const result = await response.json();
                 if (result.status === 'success') {
                     const settings = result.data;
+                    document.getElementById('alertEnabled').checked = !!settings.alert_enabled;
+                    document.getElementById('emailEnabled').checked = !!settings.email_enabled;
                     document.getElementById('monitorCpu').checked = !!settings.monitor_cpu;
                     document.getElementById('monitorGpu').checked = !!settings.monitor_gpu;
                     document.getElementById('monitorMemory').checked = !!settings.monitor_memory;
@@ -1431,6 +1454,8 @@
                     method: 'PUT',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({
+                        alert_enabled: document.getElementById('alertEnabled').checked,
+                        email_enabled: document.getElementById('emailEnabled').checked,
                         monitor_cpu: document.getElementById('monitorCpu').checked,
                         monitor_gpu: document.getElementById('monitorGpu').checked,
                         monitor_memory: document.getElementById('monitorMemory').checked,
@@ -1449,6 +1474,8 @@
 
         // 恢复默认告警设置
         function resetAlertSettings() {
+            document.getElementById('alertEnabled').checked = true;
+            document.getElementById('emailEnabled').checked = false;
             document.getElementById('monitorCpu').checked = true;
             document.getElementById('monitorGpu').checked = true;
             document.getElementById('monitorMemory').checked = true;
@@ -1456,7 +1483,7 @@
             document.getElementById('monitorNetwork').checked = false;
             document.getElementById('monitorMotherboard').checked = false;
             document.getElementById('monitorBios').checked = false;
-            showToast('已恢复默认设置（CPU、GPU、内存、硬盘）', 'info');
+            showToast('已恢复默认设置（告警开启、邮件关闭）', 'info');
         }
 
         document.getElementById('emailConfigForm').addEventListener('submit', async (e) => {

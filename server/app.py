@@ -26,63 +26,92 @@ app = Flask(__name__)
 CORS(app)
 
 # 加载配置文件
+import secrets
+
 def load_config():
-    """加载配置文件"""
-    config_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
+    """加载配置文件（从exe同级目录加载，不打包进exe）"""
+    # 获取配置文件路径
+    if getattr(sys, 'frozen', False):
+        # PyInstaller打包后：从exe所在目录加载config.json
+        base_path = os.path.dirname(sys.executable)
+    else:
+        # 开发环境的路径
+        base_path = os.path.dirname(os.path.abspath(__file__))
+    
+    config_file = os.path.join(base_path, 'config.json')
+    
+    # 默认配置（仅作为fallback，不应包含真实密码）
+    default_config = {
+        'database': {
+            'host': 'localhost',
+            'port': 3306,
+            'user': 'root',
+            'password': '',  # 空密码，必须通过config.json或环境变量配置
+            'database': 'hwmon',
+            'charset': 'utf8mb4'
+        },
+        'login': {
+            'username': 'admin',
+            'password': ''  # 空密码，必须配置
+        },
+        'server': {
+            'port': 5000,
+            'host': '0.0.0.0'
+        },
+        'collect': {
+            'max_workers': 50,
+            'timeout': 15,
+            'retry_times': 0
+        }
+    }
+    
     try:
         with open(config_file, 'r', encoding='utf-8') as f:
-            return json.load(f)
+            config = json.load(f)
+            # 合并默认配置
+            for key in default_config:
+                if key not in config:
+                    config[key] = default_config[key]
+            return config
     except Exception as e:
         print(f"警告: 无法加载配置文件 {config_file}: {e}")
-        print("使用默认配置")
-        return {
-            'database': {
-                'host': '192.168.20.17',
-                'port': 3306,
-                'user': 'HwMon',
-                'password': 'kk7cy7SDWDMXC5XQ',
-                'database': 'hwmon',
-                'charset': 'utf8mb4'
-            },
-            'login': {
-                'username': 'xapi',
-                'password': 'Ai78965'
-            },
-            'server': {
-                'port': 5000,
-                'host': '0.0.0.0'
-            },
-            'collect': {
-                'max_workers': 50,
-                'timeout': 15,
-                'retry_times': 0
-            }
-        }
+        print("使用默认配置（请注意：默认配置不包含有效密码，请创建config.json）")
+        return default_config
 
 CONFIG = load_config()
 
-# 登录配置
-app.secret_key = 'HwMon_secret_key_2026'  # 用于session加密
-LOGIN_CONFIG = CONFIG.get('login', {
-    'username': 'xapi',
-    'password': 'Ai78965'
-})
+# Session密钥 - 优先从环境变量读取，否则生成随机密钥
+app.secret_key = os.environ.get('SECRET_KEY') or CONFIG.get('secret_key') or secrets.token_hex(32)
 
-# MySQL数据库配置（从配置文件读取）
+# 登录配置 - 优先从环境变量读取
+LOGIN_CONFIG = {
+    'username': os.environ.get('LOGIN_USERNAME') or CONFIG.get('login', {}).get('username', 'admin'),
+    'password': os.environ.get('LOGIN_PASSWORD') or CONFIG.get('login', {}).get('password', '')
+}
+
+# 检查是否配置了有效密码
+if not LOGIN_CONFIG['password']:
+    print("⚠️  警告: 未配置登录密码！请设置 LOGIN_PASSWORD 环境变量或在 config.json 中配置")
+
+# MySQL数据库配置（优先从环境变量读取）
 db_config = CONFIG.get('database', {})
 MYSQL_CONFIG = {
-    'host': db_config.get('host', '192.168.20.17'),
-    'port': db_config.get('port', 3306),
-    'user': db_config.get('user', 'HwMon'),
-    'password': db_config.get('password', 'kk7cy7SDWDMXC5XQ'),
-    'database': db_config.get('database', 'hwmon'),
-    'charset': db_config.get('charset', 'utf8mb4'),
+    'host': os.environ.get('DB_HOST') or db_config.get('host', 'localhost'),
+    'port': int(os.environ.get('DB_PORT') or db_config.get('port', 3306)),
+    'user': os.environ.get('DB_USER') or db_config.get('user', 'root'),
+    'password': os.environ.get('DB_PASSWORD') or db_config.get('password', ''),
+    'database': os.environ.get('DB_NAME') or db_config.get('database', 'hwmon'),
+    'charset': os.environ.get('DB_CHARSET') or db_config.get('charset', 'utf8mb4'),
     'cursorclass': pymysql.cursors.DictCursor,
-    'init_command': "SET time_zone='+08:00', innodb_lock_wait_timeout=10",  # 设置时区为东八区，锁等待超时10秒
-    'connect_timeout': 10,  # 连接超时10秒
-    'read_timeout': 30,     # 读取超时30秒
-    'write_timeout': 30     # 写入超时30秒
+    'init_command': "SET time_zone='+08:00', innodb_lock_wait_timeout=10",
+    'connect_timeout': 10,
+    'read_timeout': 30,
+    'write_timeout': 30
 }
+
+# 检查数据库配置
+if not MYSQL_CONFIG['password']:
+    print("⚠️  警告: 未配置数据库密码！请设置 DB_PASSWORD 环境变量或在 config.json 中配置")
 
 # 数据库连接池
 db_pool = None
@@ -95,21 +124,27 @@ COLLECT_CONFIG = {
     'retry_times': collect_config.get('retry_times', 0),
 }
 
+# 硬件变更检测线程池（异步执行，不阻塞主流程）
+hw_detection_executor = ThreadPoolExecutor(
+    max_workers=20,  # 20个并发检测线程
+    thread_name_prefix='hw_detect'
+)
+
 
 def init_db_pool():
-    """初始化数据库连接池"""
+    """初始化数据库连接池（优化为支持1500+客户端）"""
     global db_pool
     db_pool = PooledDB(
         creator=pymysql,
-        maxconnections=100,     # 连接池最大连接数（增加到100支持高并发）
-        mincached=10,           # 初始化时创建的空闲连接数
-        maxcached=30,           # 连接池最多缓存的空闲连接数
-        maxusage=1000,          # 单个连接最多被使用的次数
-        blocking=True,          # 连接池满时是否阻塞等待
+        maxconnections=300,     # 支持300并发（1500客户端/5分钟均匀分布）
+        mincached=30,           # 预创建30个空闲连接
+        maxcached=80,           # 最多缓存80个空闲连接
+        maxusage=300,           # 每个连接使用300次后回收（更频繁刷新）
+        blocking=False,         # 连接池满时不阻塞，快速失败
         ping=1,                 # 连接时检查连接是否可用
         **MYSQL_CONFIG
     )
-    print("MySQL连接池初始化成功")
+    print("MySQL连接池初始化成功（配置：max=300, min=30, cache=80）")
     print("数据库时区: 东八区 (北京时间)")
 
 
@@ -151,6 +186,38 @@ def get_db_readonly():
                 raise e
 
 
+from contextlib import contextmanager
+
+@contextmanager
+def get_db_safe():
+    """安全的数据库连接上下文管理器（自动关闭连接）"""
+    conn = None
+    try:
+        conn = get_db()
+        yield conn
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except:
+                pass
+
+
+@contextmanager
+def get_db_readonly_safe():
+    """安全的只读数据库连接上下文管理器（自动关闭连接）"""
+    conn = None
+    try:
+        conn = get_db_readonly()
+        yield conn
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except:
+                pass
+
+
 def init_tables():
     """初始化数据库表结构"""
     conn = get_db()
@@ -183,7 +250,8 @@ def init_tables():
                 FOREIGN KEY (group_id) REFERENCES `groups`(id) ON DELETE SET NULL,
                 INDEX idx_client_id (client_id),
                 INDEX idx_group_id (group_id),
-                INDEX idx_last_report (last_report)
+                INDEX idx_last_report (last_report),
+                INDEX idx_last_report_desc (last_report DESC)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         ''')
 
@@ -212,7 +280,8 @@ def init_tables():
                 snapshot LONGTEXT,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                 INDEX idx_client_id (client_id),
-                INDEX idx_timestamp (timestamp)
+                INDEX idx_timestamp (timestamp),
+                INDEX idx_client_timestamp (client_id, timestamp DESC)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         ''')
 
@@ -244,7 +313,8 @@ def init_tables():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 INDEX idx_client_id (client_id),
                 INDEX idx_resolved (resolved),
-                INDEX idx_created_at (created_at)
+                INDEX idx_created_at (created_at),
+                INDEX idx_created_resolved (created_at DESC, resolved)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         ''')
 
@@ -267,6 +337,8 @@ def init_tables():
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS alert_settings (
                 id INT PRIMARY KEY,
+                alert_enabled TINYINT DEFAULT 1 COMMENT '告警开关：1=开启告警记录，0=关闭告警',
+                email_enabled TINYINT DEFAULT 0 COMMENT '邮件开关：1=开启邮件通知，0=关闭邮件',
                 monitor_cpu TINYINT DEFAULT 1,
                 monitor_gpu TINYINT DEFAULT 1,
                 monitor_memory TINYINT DEFAULT 1,
@@ -278,6 +350,51 @@ def init_tables():
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         ''')
         cursor.execute('INSERT IGNORE INTO alert_settings (id) VALUES (1)')
+
+        # 数据库迁移：为已存在的表添加新字段
+        try:
+            # 检查 alert_enabled 字段是否存在
+            cursor.execute("SHOW COLUMNS FROM alert_settings LIKE 'alert_enabled'")
+            if not cursor.fetchone():
+                print('[INFO] 正在迁移数据库：添加 alert_enabled 字段')
+                cursor.execute("ALTER TABLE alert_settings ADD COLUMN alert_enabled TINYINT DEFAULT 1 COMMENT '告警开关' AFTER id")
+            
+            # 检查 email_enabled 字段是否存在
+            cursor.execute("SHOW COLUMNS FROM alert_settings LIKE 'email_enabled'")
+            if not cursor.fetchone():
+                print('[INFO] 正在迁移数据库：添加 email_enabled 字段')
+                cursor.execute("ALTER TABLE alert_settings ADD COLUMN email_enabled TINYINT DEFAULT 0 COMMENT '邮件开关' AFTER alert_enabled")
+            
+            conn.commit()
+            print('[INFO] 数据库字段迁移完成')
+        except Exception as e:
+            print(f'[WARN] 数据库字段迁移失败: {e}')
+            # 不中断启动，继续运行
+
+        # 数据库迁移：添加复合索引
+        try:
+            # 检查 hardware_history 表的复合索引
+            cursor.execute("SHOW INDEX FROM hardware_history WHERE Key_name = 'idx_client_timestamp'")
+            if not cursor.fetchone():
+                print('[INFO] 正在添加硬件历史表复合索引')
+                cursor.execute("ALTER TABLE hardware_history ADD INDEX idx_client_timestamp (client_id, timestamp DESC)")
+            
+            # 检查 clients 表的降序索引
+            cursor.execute("SHOW INDEX FROM clients WHERE Key_name = 'idx_last_report_desc'")
+            if not cursor.fetchone():
+                print('[INFO] 正在添加客户端表降序索引')
+                cursor.execute("ALTER TABLE clients ADD INDEX idx_last_report_desc (last_report DESC)")
+            
+            # 检查 alert_records 表的复合索引
+            cursor.execute("SHOW INDEX FROM alert_records WHERE Key_name = 'idx_created_resolved'")
+            if not cursor.fetchone():
+                print('[INFO] 正在添加告警记录表复合索引')
+                cursor.execute("ALTER TABLE alert_records ADD INDEX idx_created_resolved (created_at DESC, resolved)")
+            
+            conn.commit()
+            print('[INFO] 数据库索引迁移完成')
+        except Exception as e:
+            print(f'[WARN] 数据库索引迁移失败: {e}')
 
         conn.commit()
         print("数据库表初始化完成")
@@ -520,7 +637,7 @@ def send_alert_email(client_id, hostname, local_ip, changes):
 
 def _check_hardware_changes(cursor, conn, client_id, hostname, local_ip, hardware_info,
                             cpu_info, gpu_info, mem_info, disk_info):
-    """检查硬件变更（独立事务，不阻塞主流程）"""
+    """检查硬件变更（同步版本，保留以兼容）"""
     try:
         # 检查是否有基准数据
         cursor.execute('SELECT * FROM client_baselines WHERE client_id = %s', (client_id,))
@@ -554,25 +671,32 @@ def _check_hardware_changes(cursor, conn, client_id, hostname, local_ip, hardwar
             changes = compare_hardware(baseline_snapshots, hardware_info, alert_settings)
 
             if changes:
-                # 发现变更：记录告警
-                alert_detail = json.dumps(changes, ensure_ascii=False)
-                cursor.execute('''
-                    INSERT INTO alert_records (client_id, alert_type, alert_detail)
-                    VALUES (%s, %s, %s)
-                ''', (client_id, 'hardware_change', alert_detail))
-                conn.commit()
+                # 检查告警开关
+                if alert_settings.get('alert_enabled', 1):
+                    # 记录告警到数据库
+                    alert_detail = json.dumps(changes, ensure_ascii=False)
+                    cursor.execute('''
+                        INSERT INTO alert_records (client_id, alert_type, alert_detail)
+                        VALUES (%s, %s, %s)
+                    ''', (client_id, 'hardware_change', alert_detail))
+                    conn.commit()
 
-                print(f'[ALERT] 客户端 {client_id} 检测到硬件变更: {len(changes)} 项')
+                    print(f'[ALERT] 客户端 {client_id} 检测到硬件变更: {len(changes)} 项')
+                else:
+                    print(f'[INFO] 客户端 {client_id} 检测到硬件变更，但告警已关闭，未记录')
 
-                # 尝试发送邮件（不阻塞主流程）
-                try:
-                    email_sent = send_alert_email(client_id, hostname, local_ip, changes)
-                    if email_sent:
-                        print(f'[INFO] 已向管理员发送告警邮件')
-                    else:
-                        print(f'[WARN] 告警邮件发送失败（可能未配置或配置错误）')
-                except Exception as e:
-                    print(f'[WARN] 发送邮件异常: {e}')
+                # 检查邮件开关（独立于告警开关）
+                if alert_settings.get('email_enabled', 0):
+                    try:
+                        email_sent = send_alert_email(client_id, hostname, local_ip, changes)
+                        if email_sent:
+                            print(f'[INFO] 已向管理员发送告警邮件')
+                        else:
+                            print(f'[WARN] 告警邮件发送失败（可能未配置或配置错误）')
+                    except Exception as e:
+                        print(f'[WARN] 发送邮件异常: {e}')
+                else:
+                    print(f'[INFO] 邮件通知已关闭，未发送邮件')
     except Exception as e:
         # 回滚事务
         try:
@@ -582,11 +706,37 @@ def _check_hardware_changes(cursor, conn, client_id, hostname, local_ip, hardwar
         raise e
 
 
+def _check_hardware_changes_async(client_id, hostname, local_ip, hardware_info,
+                                   cpu_info, gpu_info, mem_info, disk_info):
+    """异步硬件变更检测（独立线程，自己管理数据库连接）"""
+    conn = None
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # 复用原有逻辑
+        _check_hardware_changes(cursor, conn, client_id, hostname, local_ip, hardware_info,
+                                cpu_info, gpu_info, mem_info, disk_info)
+    except Exception as e:
+        print(f'[WARN] 异步硬件检测失败 {client_id}: {e}')
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except:
+                pass
+
+
 # =================================================================
 
 
 def collect_single_client(client_id, local_ip):
-    """采集单个客户端(用于并发执行)"""
+    """采集单个客户端(用于并发执行) - 使用全局配置"""
+    return collect_single_client_with_config(client_id, local_ip, COLLECT_CONFIG)
+
+
+def collect_single_client_with_config(client_id, local_ip, config):
+    """采集单个客户端(使用指定配置，避免全局状态污染)"""
     if not local_ip:
         return {
             'client_id': client_id,
@@ -598,7 +748,7 @@ def collect_single_client(client_id, local_ip):
         response = requests.post(
             f'http://{local_ip}:13301/api/collect',
             json={'trigger': 'server'},
-            timeout=COLLECT_CONFIG['timeout']
+            timeout=config['timeout']
         )
 
         if response.status_code == 200:
@@ -749,28 +899,17 @@ def _process_report(attempt, max_retries):
             VALUES (%s, %s, %s, %s, %s, %s)
         ''', (client_id, cpu_info, mem_info, disk_info, gpu_info, json.dumps(hardware_info, ensure_ascii=False)))
 
-        # 清理历史记录，只保留最近10条
-        cursor.execute('''
-            DELETE FROM hardware_history
-            WHERE id NOT IN (
-                SELECT id FROM (
-                    SELECT id FROM hardware_history
-                    WHERE client_id = %s
-                    ORDER BY timestamp DESC
-                    LIMIT 10
-                ) AS tmp
-            )
-            AND client_id = %s
-        ''', (client_id, client_id))
+        # 【优化】移除实时DELETE，改为后台定时任务清理（见下方 cleanup_old_records 函数）
+        # 这样每次上报不会执行耗时的DELETE操作，大幅提升性能
         conn.commit()  # 提交硬件历史相关操作
 
-        # 步骤3: 硬件变更检测（异步处理，不阻塞主流程）
-        try:
-            _check_hardware_changes(cursor, conn, client_id, hostname, local_ip, hardware_info,
-                                    cpu_info, gpu_info, mem_info, disk_info)
-        except Exception as e:
-            # 变更检测失败不影响主流程
-            print(f'[WARN] 硬件变更检测失败: {e}')
+        # 【优化】步骤3: 硬件变更检测（异步执行，不阻塞主流程）
+        # 提交到线程池异步执行，立即返回，不等待结果
+        hw_detection_executor.submit(
+            _check_hardware_changes_async,
+            client_id, hostname, local_ip, hardware_info,
+            cpu_info, gpu_info, mem_info, disk_info
+        )
 
         conn.close()
         return jsonify({'status': 'success', 'message': '接收成功'})
@@ -937,11 +1076,9 @@ def collect_all_clients():
         max_workers = params.get('max_workers', COLLECT_CONFIG['max_workers'])
         timeout = params.get('timeout', COLLECT_CONFIG['timeout'])
 
-        # 临时覆盖配置
-        old_workers = COLLECT_CONFIG['max_workers']
-        old_timeout = COLLECT_CONFIG['timeout']
-        COLLECT_CONFIG['max_workers'] = max_workers
-        COLLECT_CONFIG['timeout'] = timeout
+        # 验证参数范围
+        max_workers = max(1, min(max_workers, 200))  # 限制在1-200之间
+        timeout = max(5, min(timeout, 60))  # 限制在5-60秒之间
 
         conn = get_db_readonly()  # 只读查询使用只读连接
         cursor = conn.cursor()
@@ -951,8 +1088,6 @@ def collect_all_clients():
         conn.close()
 
         if not clients:
-            COLLECT_CONFIG['max_workers'] = old_workers
-            COLLECT_CONFIG['timeout'] = old_timeout
             return jsonify({
                 'status': 'completed',
                 'total': 0,
@@ -965,11 +1100,18 @@ def collect_all_clients():
         start_time = time.time()
         results = []
 
+        # 创建局部配置副本（避免修改全局配置）
+        local_collect_config = {
+            'max_workers': max_workers,
+            'timeout': timeout,
+            'retry_times': COLLECT_CONFIG['retry_times']
+        }
+
         # 使用线程池并发采集
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             # 提交所有采集任务
             futures = {
-                executor.submit(collect_single_client, c['client_id'], c['local_ip']): c['client_id']
+                executor.submit(collect_single_client_with_config, c['client_id'], c['local_ip'], local_collect_config): c['client_id']
                 for c in clients
             }
 
@@ -990,10 +1132,6 @@ def collect_all_clients():
         # 统计结果
         success_count = sum(1 for r in results if r['status'] == 'success')
         fail_count = len(results) - success_count
-
-        # 恢复配置
-        COLLECT_CONFIG['max_workers'] = old_workers
-        COLLECT_CONFIG['timeout'] = old_timeout
 
         return jsonify({
             'status': 'completed',
@@ -1058,7 +1196,7 @@ def create_group():
 
         return jsonify({'status': 'success', 'group_id': group_id})
 
-    except sqlite3.IntegrityError:
+    except pymysql.err.IntegrityError:
         return jsonify({'error': '分组名称已存在'}), 400
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -1421,8 +1559,20 @@ def batch_assign_group():
         client_ids = data.get('client_ids', [])
         group_id = data.get('group_id')
 
+        # 输入验证
         if not client_ids:
             return jsonify({'error': '请选择要操作的客户端'}), 400
+        
+        # 限制批量操作数量，防止SQL过长
+        MAX_BATCH_SIZE = 1000
+        if len(client_ids) > MAX_BATCH_SIZE:
+            return jsonify({'error': f'批量操作数量不能超过{MAX_BATCH_SIZE}个'}), 400
+        
+        # 验证client_ids格式（只允许字母、数字、下划线、连字符）
+        import re
+        for cid in client_ids:
+            if not re.match(r'^[a-zA-Z0-9_-]+$', str(cid)):
+                return jsonify({'error': f'无效的客户端ID: {cid}'}), 400
 
         conn = get_db()
         cursor = conn.cursor()
@@ -1551,6 +1701,7 @@ def get_client_baseline(client_id):
 @login_required
 def set_client_baseline(client_id):
     """手动设置/重置客户端的硬件基准（使用当前最新上报数据）"""
+    conn = None
     try:
         conn = get_db()
         cursor = conn.cursor()
@@ -1558,7 +1709,6 @@ def set_client_baseline(client_id):
         # 验证客户端存在
         cursor.execute('SELECT client_id FROM clients WHERE client_id = %s', (client_id,))
         if not cursor.fetchone():
-            conn.close()
             return jsonify({'error': '客户端不存在'}), 404
 
         # 获取最新的硬件报告
@@ -1569,7 +1719,6 @@ def set_client_baseline(client_id):
         report = cursor.fetchone()
 
         if not report:
-            conn.close()
             return jsonify({'error': '该客户端尚未上报任何硬件数据'}), 400
 
         hardware_info = json.loads(report['report_data'])
@@ -1593,12 +1742,22 @@ def set_client_baseline(client_id):
         ''', (client_id, cpu_info, gpu_info, mem_info, disk_info))
 
         conn.commit()
-        conn.close()
 
-        return jsonify({'status': 'success', 'message': '基准设置成功'})
+        return jsonify({'status': 'success', 'message': '基准已更新'})
 
     except Exception as e:
+        if conn:
+            try:
+                conn.rollback()
+            except:
+                pass
         return jsonify({'error': str(e)}), 500
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except:
+                pass
 
 
 @app.route('/api/client/<client_id>/alerts', methods=['GET'])
@@ -1649,7 +1808,7 @@ def get_all_alerts():
         per_page = int(request.args.get('per_page', 20))
         resolved = request.args.get('resolved')  # 'true' or 'false' or None
 
-        conn = get_db_readonly()  # 只读查询使用只读连接
+        conn = get_db()  # 使用普通连接，确保能看到最新的告警数据
         cursor = conn.cursor()
 
         query = '''
@@ -1881,7 +2040,7 @@ def test_email_config():
 def get_alert_settings():
     """获取告警设置"""
     try:
-        conn = get_db_readonly()  # 只读查询使用只读连接
+        conn = get_db()  # 使用普通连接
         cursor = conn.cursor()
         cursor.execute('SELECT * FROM alert_settings WHERE id = 1')
         row = cursor.fetchone()
@@ -1891,6 +2050,8 @@ def get_alert_settings():
             return jsonify({'status': 'success', 'data': dict(row)})
         else:
             return jsonify({'status': 'success', 'data': {
+                'alert_enabled': 1,
+                'email_enabled': 0,
                 'monitor_cpu': 1,
                 'monitor_gpu': 1,
                 'monitor_memory': 1,
@@ -1916,6 +2077,8 @@ def update_alert_settings():
 
         cursor.execute('''
             UPDATE alert_settings SET
+                alert_enabled = %s,
+                email_enabled = %s,
                 monitor_cpu = %s,
                 monitor_gpu = %s,
                 monitor_memory = %s,
@@ -1926,6 +2089,8 @@ def update_alert_settings():
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = 1
         ''', (
+            1 if data.get('alert_enabled') else 0,
+            1 if data.get('email_enabled') else 0,
             1 if data.get('monitor_cpu') else 0,
             1 if data.get('monitor_gpu') else 0,
             1 if data.get('monitor_memory') else 0,
@@ -1958,11 +2123,96 @@ def get_collect_config():
     })
 
 
+# =================================================================
+# 后台定时任务：清理旧记录
+# =================================================================
+
+def cleanup_old_records():
+    """后台线程：定期分批清理hardware_history旧记录（每客户端保留10条）"""
+    import time as time_module
+    
+    print('[INFO] 后台清理线程已启动')
+    
+    while True:
+        try:
+            conn = get_db()
+            cursor = conn.cursor()
+            
+            # 获取所有需要清理的client_id（超过10条记录的客户端）
+            cursor.execute('''
+                SELECT client_id, COUNT(*) as cnt 
+                FROM hardware_history 
+                GROUP BY client_id 
+                HAVING COUNT(*) > 10
+            ''')
+            clients_to_clean = [row['client_id'] for row in cursor.fetchall()]
+            
+            if not clients_to_clean:
+                conn.close()
+                time_module.sleep(1800)  # 没有需要清理的，30分钟后再检查
+                continue
+            
+            total_deleted = 0
+            batch_size = 50  # 每批处理50个客户端
+            
+            # 分批处理，避免大事务
+            for i in range(0, len(clients_to_clean), batch_size):
+                batch = clients_to_clean[i:i+batch_size]
+                batch_deleted = 0
+                
+                for client_id in batch:
+                    try:
+                        cursor.execute('''
+                            DELETE FROM hardware_history
+                            WHERE id NOT IN (
+                                SELECT id FROM (
+                                    SELECT id FROM hardware_history
+                                    WHERE client_id = %s
+                                    ORDER BY timestamp DESC
+                                    LIMIT 10
+                                ) AS tmp
+                            )
+                            AND client_id = %s
+                        ''', (client_id, client_id))
+                        batch_deleted += cursor.rowcount
+                    except Exception as e:
+                        print(f'[WARN] 清理客户端 {client_id} 失败: {e}')
+                        continue
+                
+                conn.commit()  # 每批提交一次
+                total_deleted += batch_deleted
+                
+                # 小延迟，避免锁竞争
+                if len(batch) > 10:
+                    time_module.sleep(0.1)
+            
+            conn.close()
+            
+            if total_deleted > 0:
+                print(f'[INFO] 清理了 {total_deleted} 条旧记录（共{len(clients_to_clean)}个客户端）')
+            else:
+                print(f'[INFO] 本次无需清理（检查了{len(clients_to_clean)}个客户端）')
+                
+        except Exception as e:
+            print(f'[ERROR] 清理任务失败: {e}')
+            import traceback
+            traceback.print_exc()
+        
+        # 每30分钟执行一次清理
+        time_module.sleep(1800)
+
+
 if __name__ == '__main__':
     # 初始化数据库连接池
     init_db_pool()
     # 初始化表结构
     init_tables()
+    
+    # 启动后台清理线程
+    import threading
+    cleanup_thread = threading.Thread(target=cleanup_old_records, daemon=True, name='CleanupThread')
+    cleanup_thread.start()
+    print('[INFO] 后台清理线程已启动')
     
     print("=" * 60)
     print("硬件监控系统服务端启动")
