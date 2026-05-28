@@ -9,6 +9,7 @@ __pycache__/
 dist/
 build/
 nul
+release/
 
 # IDE
 .vscode/
@@ -28,6 +29,7 @@ server.log
 
 # Deploy packages (generated, not source)
 deploy_package/
+deploy/
 
 # Config files with secrets
 config.json

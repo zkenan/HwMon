@@ -6,9 +6,13 @@ Flask Web应用,提供API和Web管理界面
 """
 
 import os
+import sys
 import json
 import time
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+
+# 东八区固定时区偏移（确保所有时间戳使用 UTC+8，避免系统时区不一致问题）
+TZ_CST = timezone(timedelta(hours=8), name='CST')
 from flask import Flask, request, jsonify, render_template, send_file, session, redirect, url_for
 from flask_cors import CORS
 import io
@@ -21,6 +25,7 @@ from openpyxl.styles import Font, Alignment, PatternFill
 import functools
 import pymysql
 from dbutils.pooled_db import PooledDB
+from ai_analyzer import analyze_process_alert, test_ai_connection
 
 app = Flask(__name__)
 CORS(app)
@@ -346,6 +351,9 @@ def init_tables():
                 monitor_network TINYINT DEFAULT 0,
                 monitor_motherboard TINYINT DEFAULT 0,
                 monitor_bios TINYINT DEFAULT 0,
+                monitor_temperature TINYINT DEFAULT 0 COMMENT '监控温度传感器变化',
+                monitor_fan TINYINT DEFAULT 0 COMMENT '监控风扇传感器变化',
+                monitor_voltage TINYINT DEFAULT 0 COMMENT '监控电压传感器变化',
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         ''')
@@ -364,7 +372,25 @@ def init_tables():
             if not cursor.fetchone():
                 print('[INFO] 正在迁移数据库：添加 email_enabled 字段')
                 cursor.execute("ALTER TABLE alert_settings ADD COLUMN email_enabled TINYINT DEFAULT 0 COMMENT '邮件开关' AFTER alert_enabled")
-            
+
+            # 检查 monitor_temperature 字段是否存在
+            cursor.execute("SHOW COLUMNS FROM alert_settings LIKE 'monitor_temperature'")
+            if not cursor.fetchone():
+                print('[INFO] 正在迁移数据库：添加 monitor_temperature 字段')
+                cursor.execute("ALTER TABLE alert_settings ADD COLUMN monitor_temperature TINYINT DEFAULT 0 COMMENT '监控温度传感器变化'")
+
+            # 检查 monitor_fan 字段是否存在
+            cursor.execute("SHOW COLUMNS FROM alert_settings LIKE 'monitor_fan'")
+            if not cursor.fetchone():
+                print('[INFO] 正在迁移数据库：添加 monitor_fan 字段')
+                cursor.execute("ALTER TABLE alert_settings ADD COLUMN monitor_fan TINYINT DEFAULT 0 COMMENT '监控风扇传感器变化'")
+
+            # 检查 monitor_voltage 字段是否存在
+            cursor.execute("SHOW COLUMNS FROM alert_settings LIKE 'monitor_voltage'")
+            if not cursor.fetchone():
+                print('[INFO] 正在迁移数据库：添加 monitor_voltage 字段')
+                cursor.execute("ALTER TABLE alert_settings ADD COLUMN monitor_voltage TINYINT DEFAULT 0 COMMENT '监控电压传感器变化'")
+
             conn.commit()
             print('[INFO] 数据库字段迁移完成')
         except Exception as e:
@@ -395,6 +421,95 @@ def init_tables():
             print('[INFO] 数据库索引迁移完成')
         except Exception as e:
             print(f'[WARN] 数据库索引迁移失败: {e}')
+
+        # 创建进程告警记录表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS process_alert_records (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                client_id VARCHAR(255) NOT NULL,
+                hostname VARCHAR(255),
+                local_ip VARCHAR(45),
+                alert_data LONGTEXT NOT NULL COMMENT '完整告警 JSON',
+                alert_count INT DEFAULT 1 COMMENT '本次告警包含的进程数量',
+                resolved TINYINT DEFAULT 0,
+                ai_analyzed TINYINT DEFAULT 0 COMMENT '是否已进行 AI 研判',
+                ai_result LONGTEXT COMMENT 'AI 研判结果',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_pa_client_id (client_id),
+                INDEX idx_pa_resolved (resolved),
+                INDEX idx_pa_created_at (created_at DESC),
+                INDEX idx_pa_ai_analyzed (ai_analyzed)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        ''')
+
+        # 创建 AI 配置表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS ai_config (
+                id INT PRIMARY KEY,
+                enabled TINYINT DEFAULT 0 COMMENT 'AI 研判总开关',
+                api_base_url VARCHAR(500) DEFAULT 'https://api.openai.com/v1' COMMENT 'API 基础地址',
+                api_key VARCHAR(500) DEFAULT '' COMMENT 'API Key',
+                model VARCHAR(100) DEFAULT 'gpt-4o-mini' COMMENT '模型名称',
+                max_tokens INT DEFAULT 2000 COMMENT '最大输出 token 数',
+                temperature DECIMAL(3,2) DEFAULT 0.30 COMMENT '温度参数',
+                system_prompt TEXT COMMENT '系统提示词',
+                auto_analyze TINYINT DEFAULT 1 COMMENT '收到告警后自动触发 AI 分析',
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        ''')
+        cursor.execute('INSERT IGNORE INTO ai_config (id) VALUES (1)')
+
+        # 创建 AI 监控主机表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS ai_monitored_hosts (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                client_id VARCHAR(255) NOT NULL UNIQUE,
+                hostname VARCHAR(255),
+                description TEXT,
+                enabled TINYINT DEFAULT 1,
+                added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_amh_client_id (client_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        ''')
+
+        # 创建主机探测目标表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS probe_targets (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                name VARCHAR(255) NOT NULL COMMENT '主机名称',
+                host VARCHAR(255) NOT NULL COMMENT 'IP或域名',
+                port INT DEFAULT 80 COMMENT '探测端口',
+                protocol VARCHAR(10) DEFAULT 'http' COMMENT 'http/https/tcp',
+                path VARCHAR(500) DEFAULT '/' COMMENT 'HTTP路径',
+                enabled TINYINT DEFAULT 1,
+                description TEXT,
+                last_status VARCHAR(20) DEFAULT 'unknown' COMMENT 'unknown/online/offline',
+                last_probe_time DATETIME,
+                last_response_time INT COMMENT '响应时间ms',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_pt_enabled (enabled)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        ''')
+
+        # 创建主机探测告警表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS probe_alerts (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                target_id INT NOT NULL,
+                target_name VARCHAR(255),
+                target_host VARCHAR(255),
+                alert_type VARCHAR(50) DEFAULT 'offline' COMMENT 'offline/timeout/slow',
+                status_code INT COMMENT 'HTTP状态码',
+                response_time INT COMMENT '响应时间ms',
+                error_message TEXT,
+                resolved TINYINT DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_pa_target (target_id),
+                INDEX idx_pa_resolved (resolved),
+                INDEX idx_pa_created (created_at DESC),
+                FOREIGN KEY (target_id) REFERENCES probe_targets(id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        ''')
 
         conn.commit()
         print("数据库表初始化完成")
@@ -441,7 +556,10 @@ def compare_hardware(baseline_snapshots, new_hardware, alert_settings=None):
             'monitor_disk': 1,
             'monitor_network': 0,
             'monitor_motherboard': 0,
-            'monitor_bios': 0
+            'monitor_bios': 0,
+            'monitor_temperature': 0,
+            'monitor_fan': 0,
+            'monitor_voltage': 0
         }
 
     # CPU对比 - 对比型号名称
@@ -558,6 +676,72 @@ def compare_hardware(baseline_snapshots, new_hardware, alert_settings=None):
                     'new': new_info or '未知'
                 })
 
+    # 温度传感器对比 - 对比传感器列表和名称
+    if alert_settings.get('monitor_temperature', 0):
+        old_temp_raw = baseline_snapshots.get('temperature', '')
+        new_temp = new_hardware.get('temperature', {})
+        if old_temp_raw and new_temp:
+            try:
+                old_temps = json.loads(old_temp_raw)
+            except (json.JSONDecodeError, TypeError):
+                old_temps = {}
+            old_sensors = old_temps.get('sensors', []) if isinstance(old_temps, dict) else []
+            new_sensors = new_temp.get('sensors', [])
+            if old_sensors and new_sensors:
+                old_names = sorted([s.get('name', '') for s in old_sensors])
+                new_names = sorted([s.get('name', '') for s in new_sensors])
+                if old_names != new_names:
+                    changes.append({
+                        'type': 'temperature',
+                        'label': '温度传感器',
+                        'old': ', '.join(old_names) if old_names else '未知',
+                        'new': ', '.join(new_names) if new_names else '未知'
+                    })
+
+    # 风扇传感器对比 - 对比传感器列表和名称
+    if alert_settings.get('monitor_fan', 0):
+        old_fan_raw = baseline_snapshots.get('fan', '')
+        new_fan = new_hardware.get('fan', {})
+        if old_fan_raw and new_fan:
+            try:
+                old_fans = json.loads(old_fan_raw)
+            except (json.JSONDecodeError, TypeError):
+                old_fans = {}
+            old_sensors = old_fans.get('sensors', []) if isinstance(old_fans, dict) else []
+            new_sensors = new_fan.get('sensors', [])
+            if old_sensors and new_sensors:
+                old_names = sorted([s.get('name', '') for s in old_sensors])
+                new_names = sorted([s.get('name', '') for s in new_sensors])
+                if old_names != new_names:
+                    changes.append({
+                        'type': 'fan',
+                        'label': '风扇传感器',
+                        'old': ', '.join(old_names) if old_names else '未知',
+                        'new': ', '.join(new_names) if new_names else '未知'
+                    })
+
+    # 电压传感器对比 - 对比传感器列表和名称
+    if alert_settings.get('monitor_voltage', 0):
+        old_volt_raw = baseline_snapshots.get('voltage', '')
+        new_volt = new_hardware.get('voltage', {})
+        if old_volt_raw and new_volt:
+            try:
+                old_volts = json.loads(old_volt_raw)
+            except (json.JSONDecodeError, TypeError):
+                old_volts = {}
+            old_sensors = old_volts.get('sensors', []) if isinstance(old_volts, dict) else []
+            new_sensors = new_volt.get('sensors', [])
+            if old_sensors and new_sensors:
+                old_names = sorted([s.get('name', '') for s in old_sensors])
+                new_names = sorted([s.get('name', '') for s in new_sensors])
+                if old_names != new_names:
+                    changes.append({
+                        'type': 'voltage',
+                        'label': '电压传感器',
+                        'old': ', '.join(old_names) if old_names else '未知',
+                        'new': ', '.join(new_names) if new_names else '未知'
+                    })
+
     return changes
 
 
@@ -606,7 +790,7 @@ def send_alert_email(client_id, hostname, local_ip, changes):
         <table style="border-collapse:collapse;">
             <tr><td style="padding:5px 10px;font-weight:bold;">客户端:</td><td style="padding:5px 10px;">{hostname or client_id}</td></tr>
             <tr><td style="padding:5px 10px;font-weight:bold;">IP地址:</td><td style="padding:5px 10px;">{local_ip or '-'}</td></tr>
-            <tr><td style="padding:5px 10px;font-weight:bold;">变更时间:</td><td style="padding:5px 10px;">{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</td></tr>
+            <tr><td style="padding:5px 10px;font-weight:bold;">变更时间:</td><td style="padding:5px 10px;">{datetime.now(TZ_CST).strftime("%Y-%m-%d %H:%M:%S")}</td></tr>
         </table>
         <h3 style="margin-top:20px;">变更详情:</h3>
         {''.join(change_lines)}
@@ -665,7 +849,10 @@ def _check_hardware_changes(cursor, conn, client_id, hostname, local_ip, hardwar
                 'disk': baseline['disk_snapshot'],
                 'network': json.dumps(hardware_info.get('network', []), ensure_ascii=False) if hardware_info.get('network') else '',
                 'motherboard': json.dumps(hardware_info.get('motherboard', {}), ensure_ascii=False) if hardware_info.get('motherboard') else '',
-                'bios': json.dumps(hardware_info.get('bios', {}), ensure_ascii=False) if hardware_info.get('bios') else ''
+                'bios': json.dumps(hardware_info.get('bios', {}), ensure_ascii=False) if hardware_info.get('bios') else '',
+                'temperature': json.dumps(hardware_info.get('temperature', {}), ensure_ascii=False) if hardware_info.get('temperature') else '',
+                'fan': json.dumps(hardware_info.get('fan', {}), ensure_ascii=False) if hardware_info.get('fan') else '',
+                'voltage': json.dumps(hardware_info.get('voltage', {}), ensure_ascii=False) if hardware_info.get('voltage') else ''
             }
 
             changes = compare_hardware(baseline_snapshots, hardware_info, alert_settings)
@@ -784,6 +971,17 @@ def collect_single_client_with_config(client_id, local_ip, config):
         }
 
 
+@app.before_request
+def _ensure_tables():
+    """确保数据库表存在（首次请求时自动创建）"""
+    if not hasattr(app, '_tables_initialized'):
+        try:
+            init_tables()
+        except Exception:
+            pass
+        app._tables_initialized = True
+
+
 @app.route('/')
 def index():
     """主页"""
@@ -871,7 +1069,7 @@ def _process_report(attempt, max_retries):
         cursor = conn.cursor()
 
         # 步骤1: 快速更新客户端信息（单独事务，减少锁持有时间）
-        current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        current_time = datetime.now(TZ_CST).strftime('%Y-%m-%d %H:%M:%S')
         cursor.execute('''
             INSERT INTO clients (client_id, hostname, local_ip, last_report)
             VALUES (%s, %s, %s, %s)
@@ -1342,7 +1540,7 @@ def export_csv():
             io.BytesIO(output.getvalue().encode('utf-8-sig')),
             mimetype='text/csv',
             as_attachment=True,
-            download_name=f'hardware_report_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv'
+            download_name=f'hardware_report_{datetime.now(TZ_CST).strftime("%Y%m%d_%H%M%S")}.csv'
         )
 
     except Exception as e:
@@ -1398,7 +1596,7 @@ def export_json():
             io.BytesIO(json.dumps(clients, ensure_ascii=False, indent=2).encode('utf-8')),
             mimetype='application/json',
             as_attachment=True,
-            download_name=f'hardware_report_{datetime.now().strftime("%Y%m%d_%H%M%S")}.json'
+            download_name=f'hardware_report_{datetime.now(TZ_CST).strftime("%Y%m%d_%H%M%S")}.json'
         )
 
     except Exception as e:
@@ -1460,7 +1658,7 @@ def export_excel():
 
         # 表头
         headers = ['主机名', '客户端ID', 'IP地址', '分组', '最后上报时间', '创建时间',
-                   'CPU', '内存', '硬盘', '显卡']
+                   'CPU', '内存', '硬盘', '显卡', '运行时间', '温度(最高)', '风扇(最高)', '电压']
         for col, header in enumerate(headers, 1):
             cell = ws.cell(row=1, column=col, value=header)
             cell.font = header_font
@@ -1484,6 +1682,10 @@ def export_excel():
             mem_str = '-'
             disk_str = '-'
             gpu_str = '-'
+            uptime_str = '-'
+            temp_str = '-'
+            fan_str = '-'
+            voltage_str = '-'
 
             if report:
                 hardware = json.loads(report['report_data'])
@@ -1514,6 +1716,30 @@ def export_excel():
                     gpu_names = [g.get('name', '?') for g in hardware['gpu']]
                     gpu_str = ' | '.join(gpu_names)
 
+                # 运行时间
+                if hardware.get('uptime') and not hardware['uptime'].get('error'):
+                    uptime_str = hardware['uptime'].get('uptime_human', '-')
+
+                # 温度（取最高值）
+                if hardware.get('temperature') and hardware['temperature'].get('sensors'):
+                    temps = hardware['temperature']['sensors']
+                    if temps:
+                        max_temp = max(s.get('value', 0) for s in temps)
+                        temp_str = f"{max_temp}°C"
+
+                # 风扇（取最高转速）
+                if hardware.get('fan') and hardware['fan'].get('sensors'):
+                    fans = hardware['fan']['sensors']
+                    if fans:
+                        max_fan = max(s.get('value', 0) for s in fans)
+                        fan_str = f"{max_fan} RPM"
+
+                # 电压
+                if hardware.get('voltage') and hardware['voltage'].get('sensors'):
+                    voltages = hardware['voltage']['sensors']
+                    if voltages:
+                        voltage_str = ' | '.join([f"{s.get('name','?')}:{s.get('value',0)}V" for s in voltages[:3]])
+
             ws.cell(row=row_idx, column=1, value=client_dict.get('hostname') or client_id)
             ws.cell(row=row_idx, column=2, value=client_id)
             ws.cell(row=row_idx, column=3, value=client_dict.get('local_ip') or '-')
@@ -1524,9 +1750,13 @@ def export_excel():
             ws.cell(row=row_idx, column=8, value=mem_str)
             ws.cell(row=row_idx, column=9, value=disk_str)
             ws.cell(row=row_idx, column=10, value=gpu_str)
+            ws.cell(row=row_idx, column=11, value=uptime_str)
+            ws.cell(row=row_idx, column=12, value=temp_str)
+            ws.cell(row=row_idx, column=13, value=fan_str)
+            ws.cell(row=row_idx, column=14, value=voltage_str)
 
         # 调整列宽
-        col_widths = [15, 20, 16, 15, 22, 22, 40, 12, 40, 30]
+        col_widths = [15, 20, 16, 15, 22, 22, 40, 12, 40, 30, 20, 15, 15, 30]
         for i, width in enumerate(col_widths, 1):
             ws.column_dimensions[chr(64 + i) if i <= 26 else 'A' + chr(64 + i - 26)].width = width
 
@@ -1541,7 +1771,7 @@ def export_excel():
             output,
             mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
             as_attachment=True,
-            download_name=f'hardware_report_{datetime.now().strftime("%Y%m%d_%H%M%S")}.xlsx'
+            download_name=f'hardware_report_{datetime.now(TZ_CST).strftime("%Y%m%d_%H%M%S")}.xlsx'
         )
 
     except Exception as e:
@@ -1806,10 +2036,22 @@ def get_all_alerts():
     try:
         page = int(request.args.get('page', 1))
         per_page = int(request.args.get('per_page', 20))
-        resolved = request.args.get('resolved')  # 'true' or 'false' or None
+        resolved = request.args.get('resolved')
 
-        conn = get_db()  # 使用普通连接，确保能看到最新的告警数据
+        conn = get_db()
         cursor = conn.cursor()
+
+        # 检查表是否存在
+        try:
+            cursor.execute("SELECT 1 FROM alert_records LIMIT 1")
+        except Exception:
+            conn.rollback()
+            try:
+                init_tables()
+            except Exception:
+                pass
+            conn.close()
+            return jsonify({'status': 'success', 'data': [], 'pagination': {'page': 1, 'per_page': per_page, 'total': 0, 'pages': 0}})
 
         query = '''
             SELECT a.*, c.hostname, c.local_ip
@@ -1824,9 +2066,9 @@ def get_all_alerts():
             params.append(1 if resolved == 'true' else 0)
 
         # 获取总数
-        count_query = query.replace('SELECT a.*, c.hostname, c.local_ip', 'SELECT COUNT(*)')
+        count_query = query.replace('SELECT a.*, c.hostname, c.local_ip', 'SELECT COUNT(*) as total')
         cursor.execute(count_query, params)
-        total = cursor.fetchone()[0]
+        total = cursor.fetchone()['total']
 
         # 分页查询
         query += ' ORDER BY a.created_at DESC LIMIT %s OFFSET %s'
@@ -2007,7 +2249,7 @@ def test_email_config():
         <h2 style="color:#38a169;">【邮件配置测试】</h2>
         <p>这是一封来自硬件监控系统的测试邮件。</p>
         <p>如果您收到此邮件，说明SMTP配置正确。</p>
-        <p style="color:#718096; margin-top:20px;">发送时间: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</p>
+        <p style="color:#718096; margin-top:20px;">发送时间: {datetime.now(TZ_CST).strftime("%Y-%m-%d %H:%M:%S")}</p>
         </body></html>
         '''
 
@@ -2058,7 +2300,10 @@ def get_alert_settings():
                 'monitor_disk': 1,
                 'monitor_network': 0,
                 'monitor_motherboard': 0,
-                'monitor_bios': 0
+                'monitor_bios': 0,
+                'monitor_temperature': 0,
+                'monitor_fan': 0,
+                'monitor_voltage': 0
             }})
 
     except Exception as e:
@@ -2086,6 +2331,9 @@ def update_alert_settings():
                 monitor_network = %s,
                 monitor_motherboard = %s,
                 monitor_bios = %s,
+                monitor_temperature = %s,
+                monitor_fan = %s,
+                monitor_voltage = %s,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = 1
         ''', (
@@ -2097,7 +2345,10 @@ def update_alert_settings():
             1 if data.get('monitor_disk') else 0,
             1 if data.get('monitor_network') else 0,
             1 if data.get('monitor_motherboard') else 0,
-            1 if data.get('monitor_bios') else 0
+            1 if data.get('monitor_bios') else 0,
+            1 if data.get('monitor_temperature') else 0,
+            1 if data.get('monitor_fan') else 0,
+            1 if data.get('monitor_voltage') else 0
         ))
 
         conn.commit()
@@ -2124,109 +2375,774 @@ def get_collect_config():
 
 
 # =================================================================
-# 后台定时任务：清理旧记录
+# 仪表盘统计 API
+# =================================================================
+
+@app.route('/api/dashboard', methods=['GET'])
+@login_required
+def get_dashboard():
+    """获取仪表盘统计数据"""
+    try:
+        conn = get_db_readonly()
+        cursor = conn.cursor()
+
+        # 客户端总数
+        cursor.execute('SELECT COUNT(*) as total FROM clients')
+        total_clients = cursor.fetchone()['total']
+
+        # 在线客户端（24小时内有上报）
+        cursor.execute("SELECT COUNT(*) as online FROM clients WHERE last_report >= DATE_SUB(NOW(), INTERVAL 24 HOUR)")
+        online_clients = cursor.fetchone()['online']
+
+        # 分组数量
+        cursor.execute('SELECT COUNT(*) as total FROM `groups`')
+        total_groups = cursor.fetchone()['total']
+
+        # 未解决告警数（硬件变更）
+        cursor.execute('SELECT COUNT(*) as total FROM alert_records WHERE resolved = 0')
+        unresolved_alerts = cursor.fetchone()['total']
+
+        # 进程告警数
+        cursor.execute('SELECT COUNT(*) as total FROM process_alert_records WHERE resolved = 0')
+        process_alerts = cursor.fetchone()['total']
+
+        # 探测告警数
+        cursor.execute('SELECT COUNT(*) as total FROM probe_alerts WHERE resolved = 0')
+        probe_alerts = cursor.fetchone()['total']
+
+        # AI 已分析数
+        cursor.execute('SELECT COUNT(*) as total FROM process_alert_records WHERE ai_analyzed = 1')
+        ai_analyzed = cursor.fetchone()['total']
+
+        # 最近 10 条上报记录
+        cursor.execute('''
+            SELECT c.client_id, c.hostname, c.local_ip, c.last_report, g.name as group_name
+            FROM clients c
+            LEFT JOIN `groups` g ON c.group_id = g.id
+            ORDER BY c.last_report DESC
+            LIMIT 10
+        ''')
+        recent_reports = [dict(row) for row in cursor.fetchall()]
+
+        # 分组统计
+        cursor.execute('''
+            SELECT g.name, g.id, COUNT(c.id) as client_count
+            FROM `groups` g
+            LEFT JOIN clients c ON g.id = c.group_id
+            GROUP BY g.id
+            ORDER BY g.name
+        ''')
+        group_stats = [dict(row) for row in cursor.fetchall()]
+
+        conn.close()
+
+        return jsonify({
+            'status': 'success',
+            'data': {
+                'total_clients': total_clients,
+                'online_clients': online_clients,
+                'offline_clients': total_clients - online_clients,
+                'total_groups': total_groups,
+                'unresolved_alerts': unresolved_alerts,
+                'process_alerts': process_alerts,
+                'ai_analyzed': ai_analyzed,
+                'probe_alerts': probe_alerts,
+                'recent_reports': recent_reports,
+                'group_stats': group_stats,
+            }
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# =================================================================
+# 进程告警 API
+# =================================================================
+
+@app.route('/api/process-alert', methods=['POST'])
+def receive_process_alert():
+    """接收客户端进程告警（无需登录，客户端上报用）"""
+    try:
+        data = request.json
+        client_id = data.get('client_id')
+        hostname = data.get('hostname', '')
+        local_ip = data.get('local_ip', '')
+        alerts = data.get('alerts', [])
+        system_summary = data.get('system_summary', {})
+        timestamp = data.get('timestamp', '')
+
+        if not client_id:
+            return jsonify({'error': '缺少 client_id'}), 400
+
+        if not alerts:
+            return jsonify({'error': '告警列表为空'}), 400
+
+        conn = get_db()
+        cursor = conn.cursor()
+
+        # 确保客户端存在
+        current_time = datetime.now(TZ_CST).strftime('%Y-%m-%d %H:%M:%S')
+        cursor.execute('''
+            INSERT INTO clients (client_id, hostname, local_ip, last_report)
+            VALUES (%s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                hostname = VALUES(hostname),
+                local_ip = VALUES(local_ip),
+                last_report = VALUES(last_report)
+        ''', (client_id, hostname, local_ip, current_time))
+
+        # 保存进程告警
+        alert_data = json.dumps({
+            "alerts": alerts,
+            "system_summary": system_summary,
+            "timestamp": timestamp
+        }, ensure_ascii=False)
+
+        cursor.execute('''
+            INSERT INTO process_alert_records (client_id, hostname, local_ip, alert_data, alert_count)
+            VALUES (%s, %s, %s, %s, %s)
+        ''', (client_id, hostname, local_ip, alert_data, len(alerts)))
+
+        alert_id = cursor.lastrowid
+        conn.commit()
+
+        # 检查是否需要触发 AI 分析（异步）
+        def _async_ai_analyze(aid, cid, adata):
+            """异步执行 AI 分析"""
+            try:
+                ai_conn = get_db()
+                ai_cursor = ai_conn.cursor()
+
+                # 检查该主机是否在 AI 监控列表中
+                ai_cursor.execute('SELECT id FROM ai_monitored_hosts WHERE client_id = %s AND enabled = 1', (cid,))
+                if not ai_cursor.fetchone():
+                    ai_conn.close()
+                    return
+
+                # 获取 AI 配置
+                ai_cursor.execute('SELECT * FROM ai_config WHERE id = 1')
+                ai_cfg = ai_cursor.fetchone()
+                if not ai_cfg or not ai_cfg.get('enabled') or not ai_cfg.get('auto_analyze'):
+                    ai_conn.close()
+                    return
+
+                ai_cfg = dict(ai_cfg)
+
+                # 调用 AI 分析
+                alert_json = json.loads(adata)
+                result = analyze_process_alert(alert_json, ai_cfg)
+
+                if result and not result.get('error'):
+                    # 保存分析结果
+                    ai_cursor.execute('''
+                        UPDATE process_alert_records SET ai_analyzed = 1, ai_result = %s WHERE id = %s
+                    ''', (json.dumps(result, ensure_ascii=False), aid))
+                    ai_conn.commit()
+                elif result and result.get('error'):
+                    # 保存错误信息
+                    ai_cursor.execute('''
+                        UPDATE process_alert_records SET ai_analyzed = 1, ai_result = %s WHERE id = %s
+                    ''', (json.dumps(result, ensure_ascii=False), aid))
+                    ai_conn.commit()
+
+                ai_conn.close()
+            except Exception as e:
+                print(f'[WARN] AI 异步分析失败 (alert_id={aid}): {e}')
+
+        # 提交到线程池异步执行
+        hw_detection_executor.submit(_async_ai_analyze, alert_id, client_id, alert_data)
+
+        conn.close()
+        return jsonify({'status': 'success', 'message': '进程告警接收成功', 'alert_id': alert_id})
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/process-alerts', methods=['GET'])
+@login_required
+def get_process_alerts():
+    """获取进程告警列表（支持分页、按主机筛选）"""
+    try:
+        page = int(request.args.get('page', 1))
+        per_page = int(request.args.get('per_page', 20))
+        client_id = request.args.get('client_id')
+        resolved = request.args.get('resolved')
+
+        conn = get_db_readonly()
+        cursor = conn.cursor()
+
+        query = 'SELECT * FROM process_alert_records WHERE 1=1'
+        count_query = 'SELECT COUNT(*) FROM process_alert_records WHERE 1=1'
+        params = []
+
+        if client_id:
+            query += ' AND client_id = %s'
+            count_query += ' AND client_id = %s'
+            params.append(client_id)
+
+        if resolved is not None:
+            query += ' AND resolved = %s'
+            count_query += ' AND resolved = %s'
+            params.append(1 if resolved == 'true' else 0)
+
+        # 获取总数
+        cursor.execute(count_query, params)
+        total = cursor.fetchone()['COUNT(*)']
+
+        # 分页查询
+        query += ' ORDER BY created_at DESC LIMIT %s OFFSET %s'
+        cursor.execute(query, params + [per_page, (page - 1) * per_page])
+
+        alerts = []
+        for row in cursor.fetchall():
+            row_dict = dict(row)
+            if row_dict.get('alert_data'):
+                row_dict['alert_data'] = json.loads(row_dict['alert_data'])
+            if row_dict.get('ai_result'):
+                row_dict['ai_result'] = json.loads(row_dict['ai_result'])
+            alerts.append(row_dict)
+
+        conn.close()
+
+        return jsonify({
+            'status': 'success',
+            'data': alerts,
+            'pagination': {
+                'page': page,
+                'per_page': per_page,
+                'total': total,
+                'pages': (total + per_page - 1) // per_page
+            }
+        })
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/process-alerts/<int:alert_id>', methods=['PUT'])
+@login_required
+def resolve_process_alert(alert_id):
+    """标记进程告警为已处理"""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute('UPDATE process_alert_records SET resolved = 1 WHERE id = %s', (alert_id,))
+        if cursor.rowcount == 0:
+            conn.close()
+            return jsonify({'error': '告警记录不存在'}), 404
+        conn.commit()
+        conn.close()
+        return jsonify({'status': 'success', 'message': '已标记为已处理'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/process-alerts/batch-resolve', methods=['PUT'])
+@login_required
+def batch_resolve_process_alerts():
+    """批量标记进程告警为已处理"""
+    try:
+        data = request.json
+        alert_ids = data.get('alert_ids', [])
+        if not alert_ids:
+            return jsonify({'error': '请选择要处理的告警'}), 400
+        conn = get_db()
+        cursor = conn.cursor()
+        placeholders = ','.join(['%s' for _ in alert_ids])
+        cursor.execute(f'UPDATE process_alert_records SET resolved = 1 WHERE id IN ({placeholders})', alert_ids)
+        affected = cursor.rowcount
+        conn.commit()
+        conn.close()
+        return jsonify({'status': 'success', 'affected': affected})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/process-alerts/<int:alert_id>/reanalyze', methods=['POST'])
+@login_required
+def reanalyze_process_alert(alert_id):
+    """手动触发单条告警的 AI 研判"""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+
+        cursor.execute('SELECT * FROM process_alert_records WHERE id = %s', (alert_id,))
+        alert = cursor.fetchone()
+        if not alert:
+            conn.close()
+            return jsonify({'error': '告警记录不存在'}), 404
+
+        # 获取 AI 配置
+        cursor.execute('SELECT * FROM ai_config WHERE id = 1')
+        ai_cfg = cursor.fetchone()
+        if not ai_cfg or not ai_cfg.get('enabled'):
+            conn.close()
+            return jsonify({'error': 'AI 未启用'}), 400
+
+        ai_cfg = dict(ai_cfg)
+        alert_data = json.loads(alert['alert_data'])
+
+        # 调用 AI 分析
+        result = analyze_process_alert(alert_data, ai_cfg)
+
+        if result:
+            cursor.execute('''
+                UPDATE process_alert_records SET ai_analyzed = 1, ai_result = %s WHERE id = %s
+            ''', (json.dumps(result, ensure_ascii=False), alert_id))
+            conn.commit()
+
+        conn.close()
+        return jsonify({'status': 'success', 'result': result})
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# =================================================================
+# AI 配置 API
+# =================================================================
+
+@app.route('/api/ai/config', methods=['GET'])
+@login_required
+def get_ai_config():
+    """获取 AI 配置（api_key 脱敏返回）"""
+    try:
+        conn = get_db_readonly()
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM ai_config WHERE id = 1')
+        row = cursor.fetchone()
+        conn.close()
+        if row:
+            config = dict(row)
+            if config.get('api_key'):
+                key = config['api_key']
+                if len(key) > 8:
+                    config['api_key'] = key[:4] + '****' + key[-4:]
+            # Decimal 字段需要转为 float 才能 JSON 序列化
+            if 'temperature' in config:
+                config['temperature'] = float(config['temperature'])
+            return jsonify({'status': 'success', 'data': config})
+        return jsonify({'status': 'success', 'data': {
+            'enabled': 0, 'api_base_url': 'https://api.openai.com/v1',
+            'api_key': '', 'model': 'gpt-4o-mini', 'max_tokens': 2000,
+            'temperature': 0.3, 'system_prompt': '', 'auto_analyze': 1
+        }})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/ai/config', methods=['PUT'])
+@login_required
+def update_ai_config():
+    """更新 AI 配置"""
+    try:
+        data = request.json
+        conn = get_db()
+        cursor = conn.cursor()
+
+        # 如果 api_key 是脱敏的，保留原值
+        if data.get('api_key') and '****' in data['api_key']:
+            cursor.execute('SELECT api_key FROM ai_config WHERE id = 1')
+            old = cursor.fetchone()
+            data['api_key'] = old['api_key'] if old else ''
+
+        cursor.execute('''
+            UPDATE ai_config SET
+                enabled = %s, api_base_url = %s, api_key = %s, model = %s,
+                max_tokens = %s, temperature = %s, system_prompt = %s, auto_analyze = %s,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = 1
+        ''', (
+            1 if data.get('enabled') else 0,
+            data.get('api_base_url', 'https://api.openai.com/v1'),
+            data.get('api_key', ''),
+            data.get('model', 'gpt-4o-mini'),
+            data.get('max_tokens', 2000),
+            float(data.get('temperature', 0.3)),
+            data.get('system_prompt', ''),
+            1 if data.get('auto_analyze') else 0
+        ))
+        conn.commit()
+        conn.close()
+        return jsonify({'status': 'success', 'message': 'AI 配置已更新'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/ai/config/test', methods=['POST'])
+@login_required
+def test_ai_config():
+    """测试 AI 接口连通性"""
+    try:
+        data = request.json
+        success, message = test_ai_connection(data)
+        if success:
+            return jsonify({'status': 'success', 'message': message})
+        else:
+            return jsonify({'status': 'error', 'message': message}), 400
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/ai/config/models', methods=['POST'])
+@login_required
+def fetch_ai_models():
+    """获取 AI 模型列表（OpenAI 兼容 /models 端点）"""
+    try:
+        data = request.json
+        api_base_url = data.get('api_base_url', '').rstrip('/')
+        api_key = data.get('api_key', '')
+        if not api_base_url or not api_key:
+            return jsonify({'error': '请填写 API 地址和 Key'}), 400
+
+        url = f"{api_base_url}/models"
+        headers = {"Authorization": f"Bearer {api_key}"}
+        resp = requests.get(url, headers=headers, timeout=15)
+        resp.raise_for_status()
+        d = resp.json()
+        models = [m.get('id', '') for m in d.get('data', []) if m.get('id')]
+        return jsonify({'status': 'success', 'models': sorted(models)})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# =================================================================
+# AI 监控主机管理 API
+# =================================================================
+
+@app.route('/api/ai/hosts', methods=['GET'])
+@login_required
+def get_ai_hosts():
+    """获取 AI 监控主机列表"""
+    try:
+        conn = get_db_readonly()
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM ai_monitored_hosts ORDER BY added_at DESC')
+        hosts = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return jsonify({'status': 'success', 'data': hosts})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/ai/hosts', methods=['POST'])
+@login_required
+def add_ai_host():
+    """添加 AI 监控主机"""
+    try:
+        data = request.json
+        client_id = data.get('client_id')
+        if not client_id:
+            return jsonify({'error': '请选择要添加的客户端'}), 400
+
+        hostname = data.get('hostname', '')
+        description = data.get('description', '')
+
+        conn = get_db()
+        cursor = conn.cursor()
+        try:
+            cursor.execute('''
+                INSERT INTO ai_monitored_hosts (client_id, hostname, description)
+                VALUES (%s, %s, %s)
+            ''', (client_id, hostname, description))
+            conn.commit()
+            host_id = cursor.lastrowid
+            conn.close()
+            return jsonify({'status': 'success', 'host_id': host_id})
+        except pymysql.err.IntegrityError:
+            conn.close()
+            return jsonify({'error': '该主机已在监控列表中'}), 400
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/ai/hosts/<int:host_id>', methods=['DELETE'])
+@login_required
+def delete_ai_host(host_id):
+    """移除 AI 监控主机"""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM ai_monitored_hosts WHERE id = %s', (host_id,))
+        if cursor.rowcount == 0:
+            conn.close()
+            return jsonify({'error': '主机不存在'}), 404
+        conn.commit()
+        conn.close()
+        return jsonify({'status': 'success', 'message': '已移除'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# =================================================================
+# 主机探测模块 API
+# =================================================================
+
+@app.route('/api/probe/targets', methods=['GET'])
+@login_required
+def get_probe_targets():
+    """获取探测目标列表"""
+    try:
+        conn = get_db_readonly()
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM probe_targets ORDER BY created_at DESC')
+        targets = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return jsonify({'status': 'success', 'data': targets})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/probe/targets', methods=['POST'])
+@login_required
+def add_probe_target():
+    """添加探测目标"""
+    try:
+        data = request.json
+        name = data.get('name', '').strip()
+        host = data.get('host', '').strip()
+        port = int(data.get('port', 80))
+        protocol = data.get('protocol', 'http')
+        path = data.get('path', '/')
+        description = data.get('description', '')
+
+        if not name or not host:
+            return jsonify({'error': '名称和地址不能为空'}), 400
+
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO probe_targets (name, host, port, protocol, path, description)
+            VALUES (%s, %s, %s, %s, %s, %s)
+        ''', (name, host, port, protocol, path, description))
+        conn.commit()
+        target_id = cursor.lastrowid
+        conn.close()
+        return jsonify({'status': 'success', 'target_id': target_id})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/probe/targets/<int:target_id>', methods=['PUT'])
+@login_required
+def update_probe_target(target_id):
+    try:
+        data = request.json
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute('''UPDATE probe_targets SET name=%s, host=%s, port=%s, protocol=%s, path=%s, description=%s, enabled=%s WHERE id=%s''',
+            (data.get('name'), data.get('host'), int(data.get('port',80)), data.get('protocol','http'), data.get('path','/'), data.get('description',''), 1 if data.get('enabled',True) else 0, target_id))
+        conn.commit()
+        conn.close()
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/probe/targets/<int:target_id>', methods=['DELETE'])
+@login_required
+def delete_probe_target(target_id):
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM probe_targets WHERE id = %s', (target_id,))
+        conn.commit()
+        conn.close()
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/probe/targets/<int:target_id>/test', methods=['POST'])
+@login_required
+def test_probe_target(target_id):
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM probe_targets WHERE id = %s', (target_id,))
+        target = cursor.fetchone()
+        conn.close()
+        if not target:
+            return jsonify({'error': '目标不存在'}), 404
+        result = _probe_single_target(dict(target))
+        return jsonify({'status': 'success', 'result': result})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/probe/alerts', methods=['GET'])
+@login_required
+def get_probe_alerts():
+    try:
+        page = int(request.args.get('page', 1))
+        per_page = int(request.args.get('per_page', 50))
+        resolved = request.args.get('resolved')
+        conn = get_db_readonly()
+        cursor = conn.cursor()
+        query = 'SELECT * FROM probe_alerts WHERE 1=1'
+        count_q = 'SELECT COUNT(*) as total FROM probe_alerts WHERE 1=1'
+        params = []
+        if resolved is not None:
+            query += ' AND resolved = %s'
+            count_q += ' AND resolved = %s'
+            params.append(1 if resolved == 'true' else 0)
+        cursor.execute(count_q, params)
+        total = cursor.fetchone()['total']
+        query += ' ORDER BY created_at DESC LIMIT %s OFFSET %s'
+        cursor.execute(query, params + [per_page, (page - 1) * per_page])
+        alerts = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return jsonify({'status': 'success', 'data': alerts, 'pagination': {'page': page, 'per_page': per_page, 'total': total, 'pages': (total + per_page - 1) // per_page}})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/probe/alerts/<int:alert_id>/resolve', methods=['PUT'])
+@login_required
+def resolve_probe_alert(alert_id):
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute('UPDATE probe_alerts SET resolved = 1 WHERE id = %s', (alert_id,))
+        conn.commit()
+        conn.close()
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/probe/alerts/batch-resolve', methods=['PUT'])
+@login_required
+def batch_resolve_probe_alerts():
+    try:
+        data = request.json
+        ids = data.get('ids', [])
+        if not ids:
+            return jsonify({'error': '请选择告警'}), 400
+        conn = get_db()
+        cursor = conn.cursor()
+        ph = ','.join(['%s' for _ in ids])
+        cursor.execute(f'UPDATE probe_alerts SET resolved = 1 WHERE id IN ({ph})', ids)
+        affected = cursor.rowcount
+        conn.commit()
+        conn.close()
+        return jsonify({'status': 'success', 'affected': affected})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+def _probe_single_target(target):
+    import socket as _socket
+    import subprocess as _sp
+    import platform as _pf
+    host = target['host']
+    port = int(target.get('port', 80))
+    protocol = target.get('protocol', 'http')
+    path = target.get('path', '/')
+    result = {'host': host, 'port': port, 'protocol': protocol, 'status': 'unknown', 'status_code': None, 'response_time': None, 'error': None}
+    start = time.time()
+    try:
+        if protocol == 'ping':
+            # ICMP Ping
+            param = '-n' if _pf.system().lower() == 'windows' else '-c'
+            r = _sp.run(['ping', param, '1', '-w' if _pf.system().lower() == 'windows' else '-W', '5', host],
+                        capture_output=True, text=True, timeout=10)
+            elapsed = int((time.time() - start) * 1000)
+            result['response_time'] = elapsed
+            result['status'] = 'online' if r.returncode == 0 else 'offline'
+            if r.returncode != 0:
+                result['error'] = 'Ping 失败'
+        elif protocol in ('http', 'https'):
+            resp = requests.get(f"{protocol}://{host}:{port}{path}", timeout=10, verify=False)
+            result['status_code'] = resp.status_code
+            result['response_time'] = int((time.time() - start) * 1000)
+            result['status'] = 'online' if resp.status_code < 500 else 'offline'
+        else:
+            sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+            sock.settimeout(10)
+            r = sock.connect_ex((host, port))
+            result['response_time'] = int((time.time() - start) * 1000)
+            sock.close()
+            result['status'] = 'online' if r == 0 else 'offline'
+    except Exception as e:
+        result['status'] = 'offline'
+        result['error'] = str(e)[:200]
+    return result
+
+
+def probe_all_targets():
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM probe_targets WHERE enabled = 1')
+        targets = [dict(row) for row in cursor.fetchall()]
+        if not targets:
+            conn.close()
+            return
+        for target in targets:
+            result = _probe_single_target(target)
+            cursor.execute('UPDATE probe_targets SET last_status=%s, last_probe_time=NOW(), last_response_time=%s WHERE id=%s',
+                (result['status'], result.get('response_time'), target['id']))
+            if result['status'] == 'offline':
+                cursor.execute('SELECT id FROM probe_alerts WHERE target_id = %s AND resolved = 0 LIMIT 1', (target['id'],))
+                if not cursor.fetchone():
+                    cursor.execute('INSERT INTO probe_alerts (target_id, target_name, target_host, alert_type, error_message) VALUES (%s,%s,%s,%s,%s)',
+                        (target['id'], target['name'], target['host'], 'offline', result.get('error','')))
+            else:
+                cursor.execute('UPDATE probe_alerts SET resolved = 1 WHERE target_id = %s AND resolved = 0 AND alert_type = "offline"', (target['id'],))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f'[WARN] Probe error: {e}')
+
+
+# =================================================================
+# 后台定时任务
 # =================================================================
 
 def cleanup_old_records():
-    """后台线程：定期分批清理hardware_history旧记录（每客户端保留10条）"""
-    import time as time_module
-    
-    print('[INFO] 后台清理线程已启动')
-    
+    import time as tmod
     while True:
         try:
             conn = get_db()
             cursor = conn.cursor()
-            
-            # 获取所有需要清理的client_id（超过10条记录的客户端）
-            cursor.execute('''
-                SELECT client_id, COUNT(*) as cnt 
-                FROM hardware_history 
-                GROUP BY client_id 
-                HAVING COUNT(*) > 10
-            ''')
-            clients_to_clean = [row['client_id'] for row in cursor.fetchall()]
-            
-            if not clients_to_clean:
-                conn.close()
-                time_module.sleep(1800)  # 没有需要清理的，30分钟后再检查
-                continue
-            
-            total_deleted = 0
-            batch_size = 50  # 每批处理50个客户端
-            
-            # 分批处理，避免大事务
-            for i in range(0, len(clients_to_clean), batch_size):
-                batch = clients_to_clean[i:i+batch_size]
-                batch_deleted = 0
-                
-                for client_id in batch:
-                    try:
-                        cursor.execute('''
-                            DELETE FROM hardware_history
-                            WHERE id NOT IN (
-                                SELECT id FROM (
-                                    SELECT id FROM hardware_history
-                                    WHERE client_id = %s
-                                    ORDER BY timestamp DESC
-                                    LIMIT 10
-                                ) AS tmp
-                            )
-                            AND client_id = %s
-                        ''', (client_id, client_id))
-                        batch_deleted += cursor.rowcount
-                    except Exception as e:
-                        print(f'[WARN] 清理客户端 {client_id} 失败: {e}')
-                        continue
-                
-                conn.commit()  # 每批提交一次
-                total_deleted += batch_deleted
-                
-                # 小延迟，避免锁竞争
-                if len(batch) > 10:
-                    time_module.sleep(0.1)
-            
+            cursor.execute('SELECT client_id, COUNT(*) as cnt FROM hardware_history GROUP BY client_id HAVING COUNT(*) > 10')
+            for row in cursor.fetchall():
+                try:
+                    cursor.execute('DELETE FROM hardware_history WHERE id NOT IN (SELECT id FROM (SELECT id FROM hardware_history WHERE client_id=%s ORDER BY timestamp DESC LIMIT 10) AS t) AND client_id=%s', (row['client_id'], row['client_id']))
+                except: pass
+            conn.commit()
             conn.close()
-            
-            if total_deleted > 0:
-                print(f'[INFO] 清理了 {total_deleted} 条旧记录（共{len(clients_to_clean)}个客户端）')
-            else:
-                print(f'[INFO] 本次无需清理（检查了{len(clients_to_clean)}个客户端）')
-                
-        except Exception as e:
-            print(f'[ERROR] 清理任务失败: {e}')
-            import traceback
-            traceback.print_exc()
-        
-        # 每30分钟执行一次清理
-        time_module.sleep(1800)
+        except: pass
+        tmod.sleep(1800)
 
 
 if __name__ == '__main__':
-    # 初始化数据库连接池
     init_db_pool()
-    # 初始化表结构
     init_tables()
-    
-    # 启动后台清理线程
-    import threading
-    cleanup_thread = threading.Thread(target=cleanup_old_records, daemon=True, name='CleanupThread')
-    cleanup_thread.start()
-    print('[INFO] 后台清理线程已启动')
-    
-    print("=" * 60)
-    print("硬件监控系统服务端启动")
-    print("访问地址: http://localhost:5000")
-    print(f"并发配置: {COLLECT_CONFIG['max_workers']} workers, {COLLECT_CONFIG['timeout']}s timeout")
-    print("=" * 60)
 
+    import threading
+    threading.Thread(target=cleanup_old_records, daemon=True).start()
+    print('[INFO] cleanup started')
+
+    def _probe_loop():
+        while True:
+            try:
+                probe_all_targets()
+            except: pass
+            time.sleep(30)
+    threading.Thread(target=_probe_loop, daemon=True).start()
+    print('[INFO] probe started (30s)')
+    print("=" * 50)
+    print("HwMon Server v5.0.0 - http://localhost:5000")
+    print("=" * 50)
     try:
-        # 生产环境: 使用waitress WSGI服务器(支持高并发,默认20线程)
         from waitress import serve
-        print("使用 Waitress WSGI 服务器(生产模式)")
         serve(app, host='0.0.0.0', port=5000, threads=20, connection_limit=2000)
     except ImportError:
-        # 开发环境: 使用Flask内置服务器
-        print("Waitress未安装,使用Flask内置服务器(开发模式)")
-        print("提示: pip install waitress 以启用高并发支持")
         app.run(host='0.0.0.0', port=5000, debug=True)
+
+
