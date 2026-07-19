@@ -42,7 +42,23 @@ class ConfigManager:
             "collect_network": True,
             "collect_motherboard": True,
             "collect_bios": True,
+            "collect_temperature": True,
+            "collect_fan": True,
+            "collect_voltage": True,
+            "collect_uptime": True,
             "compress_data": False
+        },
+        "process_monitor": {
+            "enabled": True,
+            "check_interval": 30,
+            "thresholds": {
+                "cpu_percent": 90,
+                "memory_percent": 90,
+                "gpu_percent": 90
+            },
+            "duration_seconds": 300,
+            "ignore_processes": ["System Idle Process", "System", "idle", "Idle"],
+            "gpu_enabled": False
         }
     }
 

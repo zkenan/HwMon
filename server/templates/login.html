@@ -1,234 +1,70 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>登录 - 硬件监控系统</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: 'Microsoft YaHei', Arial, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-        }
-        .login-container {
-            background: white;
-            padding: 40px;
-            border-radius: 15px;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
-            width: 100%;
-            max-width: 400px;
-        }
-        .login-header {
-            text-align: center;
-            margin-bottom: 30px;
-        }
-        .login-header h1 {
-            color: #667eea;
-            font-size: 28px;
-            margin-bottom: 10px;
-        }
-        .login-header p {
-            color: #718096;
-            font-size: 14px;
-        }
-        .form-group {
-            margin-bottom: 20px;
-        }
-        .form-group label {
-            display: block;
-            margin-bottom: 8px;
-            color: #4a5568;
-            font-weight: 600;
-            font-size: 14px;
-        }
-        .form-group input {
-            width: 100%;
-            padding: 12px 15px;
-            border: 2px solid #e2e8f0;
-            border-radius: 8px;
-            font-size: 14px;
-            transition: all 0.3s;
-        }
-        .form-group input:focus {
-            outline: none;
-            border-color: #667eea;
-            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
-        }
-        .btn {
-            width: 100%;
-            padding: 12px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            border: none;
-            border-radius: 8px;
-            font-size: 16px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.3s;
-        }
-        .btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
-        }
-        .btn:active {
-            transform: translateY(0);
-        }
-        .btn:disabled {
-            opacity: 0.6;
-            cursor: not-allowed;
-            transform: none;
-        }
-        .error-message {
-            background: #fed7d7;
-            color: #c53030;
-            padding: 12px;
-            border-radius: 8px;
-            margin-bottom: 20px;
-            font-size: 14px;
-            display: none;
-        }
-        .error-message.show {
-            display: block;
-        }
-        .loading {
-            display: inline-block;
-            width: 16px;
-            height: 16px;
-            border: 2px solid #ffffff;
-            border-top-color: transparent;
-            border-radius: 50%;
-            animation: spin 0.8s linear infinite;
-            margin-right: 8px;
-            vertical-align: middle;
-        }
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
-        .footer {
-            text-align: center;
-            margin-top: 20px;
-            color: #718096;
-            font-size: 12px;
-        }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>登录 - HwMon 硬件监控系统</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet">
+<link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" rel="stylesheet">
+<style>
+:root{--bg-deepest:#0a0c14;--bg-card:rgba(21,24,35,.85);--border:#2a2f45;--text-primary:#e8ecf4;--text-secondary:#8b92a8;--text-muted:#5a6178;--accent:#00e5a0;--accent-dim:rgba(0,229,160,.15);--radius:8px;--radius-lg:12px;--transition:.25s cubic-bezier(.4,0,.2,1)}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Noto Sans SC',sans-serif;background:var(--bg-deepest);color:var(--text-primary);min-height:100vh;display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden}
+.bg{position:absolute;inset:0;background:radial-gradient(ellipse at 30% 20%,rgba(0,229,160,.08) 0%,transparent 50%),radial-gradient(ellipse at 70% 80%,rgba(77,171,247,.06) 0%,transparent 50%),var(--bg-deepest)}
+.bg::before{content:'';position:absolute;inset:0;background-image:linear-gradient(var(--border) 1px,transparent 1px),linear-gradient(90deg,var(--border) 1px,transparent 1px);background-size:60px 60px;opacity:.15}
+.card{position:relative;z-index:1;width:420px;max-width:90vw;background:var(--bg-card);backdrop-filter:blur(20px);border:1px solid var(--border);border-radius:var(--radius-lg);padding:48px 40px;box-shadow:0 25px 60px rgba(0,0,0,.4)}
+.logo{text-align:center;margin-bottom:36px}
+.logo .icon{display:inline-flex;align-items:center;justify-content:center;width:64px;height:64px;border-radius:16px;background:linear-gradient(135deg,var(--accent),#00b880);margin-bottom:16px;box-shadow:0 8px 30px rgba(0,229,160,.25)}
+.logo .icon i{font-size:28px;color:#fff}
+.logo h1{font-size:24px;font-weight:700;font-family:'JetBrains Mono','Noto Sans SC',sans-serif}
+.logo p{color:var(--text-secondary);font-size:14px;margin-top:6px}
+.form-group{margin-bottom:20px}
+.form-group label{display:block;font-size:13px;font-weight:500;color:var(--text-secondary);margin-bottom:8px}
+.form-input{width:100%;height:44px;padding:0 14px;background:#0a0c14;border:1px solid var(--border);border-radius:var(--radius);color:var(--text-primary);font-size:14px;font-family:inherit;transition:var(--transition);outline:none}
+.form-input:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-dim)}
+.form-input::placeholder{color:var(--text-muted)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;width:100%;height:48px;border:none;border-radius:var(--radius);font-size:15px;font-weight:600;font-family:inherit;cursor:pointer;transition:var(--transition);background:linear-gradient(135deg,var(--accent),#00c08a);color:#0a0c14;box-shadow:0 4px 15px rgba(0,229,160,.25);margin-top:8px}
+.btn:hover{box-shadow:0 6px 25px rgba(0,229,160,.35);transform:translateY(-1px)}
+.btn:disabled{opacity:.5;cursor:not-allowed;transform:none}
+.error{background:rgba(255,77,106,.15);color:#ff4d6a;padding:12px;border-radius:var(--radius);margin-bottom:20px;font-size:13px;display:none}
+.error.show{display:block}
+.footer{text-align:center;margin-top:24px;color:var(--text-muted);font-size:12px;font-family:'JetBrains Mono',monospace}
+</style>
 </head>
 <body>
-    <div class="login-container">
-        <div class="login-header">
-            <h1>🖥️ 硬件监控系统</h1>
-            <p>请登录以访问系统</p>
-        </div>
-
-        <div class="error-message" id="errorMessage"></div>
-
-        <form id="loginForm">
-            <div class="form-group">
-                <label for="username">用户名</label>
-                <input type="text" id="username" name="username" required autocomplete="username" placeholder="请输入用户名">
-            </div>
-
-            <div class="form-group">
-                <label for="password">密码</label>
-                <input type="password" id="password" name="password" required autocomplete="current-password" placeholder="请输入密码">
-            </div>
-
-            <button type="submit" class="btn" id="loginBtn">
-                <span id="btnText">登录</span>
-            </button>
-        </form>
-
-        <div class="footer">
-            <p>Hardware Monitor System v4.2</p>
-        </div>
-    </div>
-
-    <script>
-        const loginForm = document.getElementById('loginForm');
-        const errorMessage = document.getElementById('errorMessage');
-        const loginBtn = document.getElementById('loginBtn');
-        const btnText = document.getElementById('btnText');
-
-        // 检查是否已登录
-        async function checkLoginStatus() {
-            try {
-                const response = await fetch('/api/check-login');
-                const result = await response.json();
-                if (result.logged_in) {
-                    window.location.href = '/';
-                }
-            } catch (error) {
-                console.error('检查登录状态失败:', error);
-            }
-        }
-
-        // 显示错误信息
-        function showError(message) {
-            errorMessage.textContent = message;
-            errorMessage.classList.add('show');
-            setTimeout(() => {
-                errorMessage.classList.remove('show');
-            }, 3000);
-        }
-
-        // 登录处理
-        loginForm.addEventListener('submit', async (e) => {
-            e.preventDefault();
-
-            const username = document.getElementById('username').value.trim();
-            const password = document.getElementById('password').value;
-
-            if (!username || !password) {
-                showError('请输入用户名和密码');
-                return;
-            }
-
-            // 禁用按钮，显示加载状态
-            loginBtn.disabled = true;
-            btnText.innerHTML = '<span class="loading"></span>登录中...';
-
-            try {
-                const response = await fetch('/api/login', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({ username, password })
-                });
-
-                const result = await response.json();
-
-                if (result.status === 'success') {
-                    // 登录成功，跳转到主页
-                    btnText.textContent = '登录成功！';
-                    setTimeout(() => {
-                        window.location.href = '/';
-                    }, 500);
-                } else {
-                    // 登录失败
-                    showError(result.message || '登录失败，请检查用户名和密码');
-                    loginBtn.disabled = false;
-                    btnText.textContent = '登录';
-                }
-            } catch (error) {
-                showError('网络错误，请稍后重试');
-                loginBtn.disabled = false;
-                btnText.textContent = '登录';
-            }
-        });
-
-        // 页面加载时检查登录状态
-        checkLoginStatus();
-
-        // 回车键提交
-        document.getElementById('password').addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') {
-                loginForm.dispatchEvent(new Event('submit'));
-            }
-        });
-    </script>
+<div class="bg"></div>
+<div class="card">
+  <div class="logo">
+    <div class="icon"><i class="fas fa-microchip"></i></div>
+    <h1>HwMon</h1>
+    <p>硬件监控系统 v5.0</p>
+  </div>
+  <div class="error" id="errMsg"></div>
+  <form id="loginForm">
+    <div class="form-group"><label>用户名</label><input type="text" class="form-input" id="username" placeholder="请输入用户名" required autocomplete="username"></div>
+    <div class="form-group"><label>密码</label><input type="password" class="form-input" id="password" placeholder="请输入密码" required autocomplete="current-password"></div>
+    <button type="submit" class="btn" id="loginBtn"><span id="btnText">登录</span></button>
+  </form>
+  <div class="footer">HwMon Server v5.0.0-20260526</div>
+</div>
+<script>
+const form=document.getElementById('loginForm'),err=document.getElementById('errMsg'),btn=document.getElementById('loginBtn'),txt=document.getElementById('btnText');
+function showErr(m){err.textContent=m;err.classList.add('show');setTimeout(()=>err.classList.remove('show'),3000);}
+async function checkLogin(){try{const r=await fetch('/api/check-login');const d=await r.json();if(d.logged_in)window.location.href='/';}catch(e){}}
+checkLogin();
+form.addEventListener('submit',async e=>{
+  e.preventDefault();
+  const u=document.getElementById('username').value.trim(),p=document.getElementById('password').value;
+  if(!u||!p){showErr('请输入用户名和密码');return;}
+  btn.disabled=true;txt.innerHTML='<i class="fas fa-spinner fa-spin"></i> 登录中...';
+  try{
+    const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})});
+    const d=await r.json();
+    if(d.status==='success'){txt.textContent='登录成功！';setTimeout(()=>window.location.href='/',500);}
+    else{showErr(d.message||'登录失败');btn.disabled=false;txt.textContent='登录';}
+  }catch(e){showErr('网络错误');btn.disabled=false;txt.textContent='登录';}
+});
+document.getElementById('password').addEventListener('keypress',e=>{if(e.key==='Enter')form.dispatchEvent(new Event('submit'));});
+</script>
 </body>
 </html>

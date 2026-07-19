@@ -1,0 +1,17 @@
+[Unit]
+Description=HwMon Hardware Monitor Client
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/opt/hwmon/hwmon_client
+WorkingDirectory=/opt/hwmon
+Restart=always
+RestartSec=30
+User=root
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

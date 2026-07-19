@@ -1,1603 +1,1188 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>HwMon - 硬件监控系统</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: 'Microsoft YaHei', Arial, sans-serif; background: #f5f7fa; color: #333; }
-        .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px 40px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-        .header h1 { font-size: 24px; margin-bottom: 5px; }
-        .header p { opacity: 0.9; font-size: 14px; }
-        .main-layout { display: flex; gap: 20px; }
-        .sidebar { width: 250px; background: white; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); padding: 20px; height: fit-content; position: sticky; top: 20px; }
-        .sidebar h3 { font-size: 16px; color: #667eea; margin-bottom: 15px; padding-bottom: 10px; border-bottom: 2px solid #f0f0f0; }
-        .group-list { list-style: none; padding: 0; margin: 0; }
-        .group-item { padding: 12px 15px; margin-bottom: 8px; border-radius: 8px; cursor: pointer; transition: all 0.3s; display: flex; justify-content: space-between; align-items: center; background: #f7fafc; }
-        .group-item:hover { background: #e2e8f0; transform: translateX(5px); }
-        .group-item.active { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; }
-        .group-item .count { background: rgba(102, 126, 234, 0.2); padding: 2px 8px; border-radius: 12px; font-size: 12px; font-weight: bold; }
-        .group-item.active .count { background: rgba(255, 255, 255, 0.3); }
-        .content-area { flex: 1; }
-        .container { max-width: 1500px; margin: 30px auto; padding: 0 20px; }
-        .toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 10px; }
-        .btn { padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; font-size: 14px; transition: all 0.3s; }
-        .btn:disabled { opacity: 0.6; cursor: not-allowed; }
-        .btn-primary { background: #667eea; color: white; }
-        .btn-primary:hover:not(:disabled) { background: #5568d3; }
-        .btn-success { background: #48bb78; color: white; }
-        .btn-success:hover:not(:disabled) { background: #38a169; }
-        .btn-danger { background: #f56565; color: white; }
-        .btn-danger:hover:not(:disabled) { background: #e53e3e; }
-        .btn-warning { background: #ed8936; color: white; }
-        .btn-warning:hover:not(:disabled) { background: #dd6b20; }
-        .btn-secondary { background: #718096; color: white; }
-        .btn-secondary:hover:not(:disabled) { background: #4a5568; }
-        .btn-info { background: #4299e1; color: white; }
-        .btn-info:hover:not(:disabled) { background: #3182ce; }
-        .btn-small { padding: 5px 10px; font-size: 11px; }
-        .btn-icon { padding: 5px 8px; font-size: 14px; min-width: 32px; }
-        .filter-group { display: flex; gap: 10px; align-items: center; }
-        select { padding: 10px 15px; border: 1px solid #ddd; border-radius: 5px; font-size: 14px; min-width: 150px; }
-        .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 30px; }
-        .stat-card { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
-        .stat-card h3 { font-size: 14px; color: #718096; margin-bottom: 10px; }
-        .stat-card .value { font-size: 32px; font-weight: bold; color: #667eea; }
-        .card { background: white; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); overflow: hidden; }
-        .card-header { padding: 20px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center; }
-        .card-header h2 { font-size: 18px; }
-        .table-container { overflow-x: auto; }
-        table { width: 100%; border-collapse: collapse; }
-        th, td { padding: 12px 15px; text-align: left; border-bottom: 1px solid #eee; white-space: nowrap; }
-        th { background: #f7fafc; font-weight: 600; color: #4a5568; font-size: 13px; }
-        td { font-size: 13px; }
-        tr:hover { background: #f7fafc; }
-        tr.selected { background: #ebf4ff; }
-        .status-online { color: #48bb78; font-weight: bold; }
-        .status-offline { color: #f56565; }
-        .report-scheduled { color: #718096; font-size: 11px; }
-        .report-ondemand { color: #667eea; font-weight: bold; font-size: 11px; }
-        /* 硬件状态标识 */
-        .hw-status-normal { color: #48bb78; font-size: 11px; }
-        .hw-status-changed { color: #f56565; font-weight: bold; font-size: 11px; }
-        .hw-status-unknown { color: #718096; font-size: 11px; }
-        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; justify-content: center; align-items: center; }
-        .modal.active { display: flex; }
-        .modal-content { background: white; border-radius: 10px; max-width: 900px; width: 90%; max-height: 85vh; overflow-y: auto; }
-        .modal-content-lg { max-width: 1100px; }
-        .modal-header { padding: 20px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center; }
-        .modal-header h3 { font-size: 18px; }
-        .modal-close { background: none; border: none; font-size: 24px; cursor: pointer; color: #718096; }
-        .modal-body { padding: 20px; }
-        .hardware-info { line-height: 1.8; }
-        .hardware-info h4 { color: #667eea; margin: 15px 0 10px 0; padding-bottom: 5px; border-bottom: 2px solid #667eea; }
-        .hardware-info p { margin: 5px 0; padding-left: 10px; }
-        .hardware-info .label { font-weight: bold; color: #4a5568; }
-        .form-group { margin-bottom: 15px; }
-        .form-group label { display: block; margin-bottom: 5px; font-weight: 600; }
-        .form-group input, .form-group textarea, .form-group select { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 5px; font-size: 14px; }
-        .form-group textarea { resize: vertical; min-height: 80px; }
-        .loading { text-align: center; padding: 40px; color: #718096; }
-        .empty-state { text-align: center; padding: 60px 20px; color: #718096; }
-        .action-btns { display: flex; gap: 4px; flex-wrap: wrap; }
-        .collect-result { margin-top: 15px; padding: 15px; background: #f7fafc; border-radius: 8px; max-height: 300px; overflow-y: auto; }
-        .collect-result-item { padding: 8px 12px; margin: 5px 0; border-radius: 5px; display: flex; justify-content: space-between; align-items: center; }
-        .collect-success { background: #f0fff4; border-left: 3px solid #48bb78; }
-        .collect-failed { background: #fff5f5; border-left: 3px solid #f56565; }
-        .collect-loading { background: #fffff0; border-left: 3px solid #ed8936; }
-        .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #ed8936; border-top-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite; margin-right: 8px; vertical-align: middle; }
-        @keyframes spin { to { transform: rotate(360deg); } }
-        .toast { position: fixed; top: 20px; right: 20px; padding: 12px 24px; border-radius: 8px; color: white; z-index: 2000; font-size: 14px; animation: slideIn 0.3s ease; }
-        .toast-success { background: #48bb78; }
-        .toast-error { background: #f56565; }
-        .toast-info { background: #667eea; }
-        @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
-        .ip-badge { background: #edf2f7; padding: 2px 8px; border-radius: 10px; font-size: 11px; color: #4a5568; }
-        /* Batch toolbar */
-        .batch-toolbar { display: none; background: #ebf4ff; padding: 10px 15px; border-radius: 8px; margin-bottom: 15px; align-items: center; gap: 10px; flex-wrap: wrap; }
-        .batch-toolbar.active { display: flex; }
-        .batch-toolbar .selected-count { font-weight: bold; color: #667eea; }
-        /* Tabs */
-        .tabs { display: flex; border-bottom: 2px solid #e2e8f0; margin-bottom: 15px; }
-        .tab { padding: 10px 20px; cursor: pointer; border: none; background: none; font-size: 14px; color: #718096; border-bottom: 2px solid transparent; margin-bottom: -2px; }
-        .tab.active { color: #667eea; border-bottom-color: #667eea; font-weight: 600; }
-        .tab-content { display: none; }
-        .tab-content.active { display: block; }
-        /* Group management */
-        .group-item { display: flex; justify-content: space-between; align-items: center; padding: 12px 15px; border: 1px solid #e2e8f0; border-radius: 8px; margin-bottom: 8px; }
-        .group-item:hover { background: #f7fafc; }
-        .group-item .group-info { flex: 1; }
-        .group-item .group-name { font-weight: 600; }
-        .group-item .group-desc { font-size: 12px; color: #718096; }
-        .group-item .group-count { font-size: 12px; color: #667eea; margin-right: 10px; }
-        .group-item .group-actions { display: flex; gap: 5px; }
-        /* History table */
-        .history-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-        .history-table th { background: #667eea; color: white; padding: 8px 10px; }
-        .history-table td { padding: 6px 10px; border-bottom: 1px solid #e2e8f0; }
-        .history-table tr:hover { background: #f7fafc; }
-        /* Alert styles */
-        .alert-item { padding: 12px 15px; border: 1px solid #fed7d7; border-radius: 8px; margin-bottom: 10px; background: #fff5f5; }
-        .alert-item.resolved { opacity: 0.6; border-color: #cbd5e0; background: #f7fafc; }
-        .alert-item .alert-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-        .alert-item .alert-time { font-size: 12px; color: #718096; }
-        .alert-item .alert-type { font-weight: bold; color: #e53e3e; }
-        .alert-item .alert-detail { font-size: 13px; line-height: 1.6; }
-        .alert-item .alert-actions { margin-top: 8px; text-align: right; }
-        .badge-alert { background: #fed7d7; color: #c53030; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: bold; }
-        /* Email config form */
-        .email-config-form .hint { font-size: 12px; color: #718096; margin-top: 5px; }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HwMon - 硬件监控系统 v5.0</title>
+<style>
+:root{--bg-deepest:#141922;--bg-deep:#1a2035;--bg-base:#1e2538;--bg-card:#232b3e;--bg-elevated:#2a3348;--bg-hover:#313a52;--border:#2e3750;--border-light:#3d4866;--text-primary:#e8ecf4;--text-secondary:#8b92a8;--text-muted:#5a6178;--accent:#3b82f6;--accent-dim:rgba(59,130,246,.12);--danger:#ef4444;--danger-dim:rgba(239,68,68,.12);--warning:#f59e0b;--warning-dim:rgba(245,158,11,.12);--info:#06b6d4;--info-dim:rgba(6,182,212,.12);--sidebar-w:240px;--header-h:56px;--radius:8px;--radius-lg:12px;--transition:.2s ease}
+[data-theme="light"]{--bg-deepest:#f5f7fa;--bg-deep:#ffffff;--bg-base:#f8f9fb;--bg-card:#ffffff;--bg-elevated:#f0f2f5;--bg-hover:#e8eaef;--border:#e2e8f0;--border-light:#cbd5e1;--text-primary:#1e293b;--text-secondary:#64748b;--text-muted:#94a3b8;--accent:#3b82f6;--accent-dim:rgba(59,130,246,.08);--danger:#ef4444;--danger-dim:rgba(239,68,68,.08);--warning:#f59e0b;--warning-dim:rgba(245,158,11,.08);--info:#06b6d4;--info-dim:rgba(6,182,212,.08)}
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%}
+body{font-family:'Microsoft YaHei','PingFang SC','Noto Sans SC',sans-serif;background:var(--bg-deepest);color:var(--text-primary);overflow:hidden}
+::-webkit-scrollbar{width:6px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+/* 排序箭头样式 */
+.sortable{cursor:pointer;user-select:none;white-space:nowrap}
+.sortable:hover{color:var(--accent)}
+.sort-icon{display:inline-flex;flex-direction:column;margin-left:4px;vertical-align:middle}
+.sort-asc,.sort-desc{width:0;height:0;border-left:4px solid transparent;border-right:4px solid transparent;display:block}
+.sort-asc{border-bottom:5px solid var(--text-muted);margin-bottom:1px}
+.sort-desc{border-top:5px solid var(--text-muted)}
+.sort-active .sort-asc{border-bottom-color:var(--accent)}
+.sort-active .sort-desc{border-top-color:var(--accent)}
+/* Login */
+#loginPage{display:flex;align-items:center;justify-content:center;height:100vh;position:relative;overflow:hidden}
+.login-bg{position:absolute;inset:0;background:radial-gradient(ellipse at 30% 20%,rgba(0,229,160,.08) 0%,transparent 50%),radial-gradient(ellipse at 70% 80%,rgba(77,171,247,.06) 0%,transparent 50%),var(--bg-deepest)}
+.login-bg::before{content:'';position:absolute;inset:0;background-image:linear-gradient(var(--border) 1px,transparent 1px),linear-gradient(90deg,var(--border) 1px,transparent 1px);background-size:60px 60px;opacity:.15}
+.login-card{position:relative;z-index:1;width:420px;max-width:90vw;background:rgba(21,24,35,.95);border:1px solid var(--border);border-radius:var(--radius-lg);padding:48px 40px;box-shadow:0 25px 60px rgba(0,0,0,.4)}
+.login-logo{text-align:center;margin-bottom:36px}
+.login-logo .icon-wrap{display:inline-flex;align-items:center;justify-content:center;width:64px;height:64px;border-radius:16px;background:linear-gradient(135deg,var(--accent),#00b880);margin-bottom:16px;box-shadow:0 8px 30px rgba(0,229,160,.25)}
+.login-logo .icon-wrap i{font-size:28px;color:#fff}
+.login-logo h1{font-size:24px;font-weight:700;font-family:'JetBrains Mono','Noto Sans SC',sans-serif}
+.login-logo p{color:var(--text-secondary);font-size:14px;margin-top:6px}
+/* Form */
+.form-group{margin-bottom:20px}.form-group label{display:block;font-size:13px;font-weight:500;color:var(--text-secondary);margin-bottom:8px}
+.form-input{width:100%;height:44px;padding:0 14px;background:var(--bg-deepest);border:1px solid var(--border);border-radius:var(--radius);color:var(--text-primary);font-size:14px;font-family:inherit;transition:var(--transition);outline:none}
+.form-input:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-dim)}
+.form-textarea{width:100%;min-height:100px;padding:12px 14px;background:var(--bg-deepest);border:1px solid var(--border);border-radius:var(--radius);color:var(--text-primary);font-size:13px;font-family:'Consolas','Courier New',monospace;resize:vertical;outline:none;transition:var(--transition)}
+.form-textarea:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-dim)}
+.form-select{width:100%;height:44px;padding:0 14px;background:var(--bg-deepest);border:1px solid var(--border);border-radius:var(--radius);color:var(--text-primary);font-size:14px;font-family:inherit;outline:none;transition:var(--transition);appearance:none}
+.form-select:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-dim)}
+.form-select option{background:var(--bg-card)}
+/* Buttons */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:40px;padding:0 20px;border:none;border-radius:var(--radius);font-size:13px;font-weight:500;font-family:inherit;cursor:pointer;transition:var(--transition);white-space:nowrap}
+.btn-primary{background:linear-gradient(135deg,var(--accent),#00c08a);color:#0a0c14;font-weight:600;box-shadow:0 4px 15px rgba(0,229,160,.25)}
+.btn-primary:hover{box-shadow:0 6px 25px rgba(0,229,160,.35);transform:translateY(-1px)}
+.btn-secondary{background:var(--bg-elevated);color:var(--text-primary);border:1px solid var(--border)}
+.btn-secondary:hover{background:var(--bg-hover);border-color:var(--border-light)}
+.btn-danger{background:var(--danger-dim);color:var(--danger);border:1px solid rgba(255,77,106,.2)}
+.btn-danger:hover{background:rgba(255,77,106,.25)}
+.btn-warning{background:var(--warning-dim);color:var(--warning);border:1px solid rgba(255,179,71,.2)}
+.btn-info{background:var(--info-dim);color:var(--info);border:1px solid rgba(77,171,247,.2)}
+.btn-ghost{background:transparent;color:var(--text-secondary)}
+.btn-ghost:hover{color:var(--text-primary);background:var(--bg-hover)}
+.btn-sm{height:32px;padding:0 12px;font-size:12px}
+.btn-block{width:100%}
+.btn:disabled{opacity:.5;cursor:not-allowed;pointer-events:none}
+/* Layout */
+#mainApp{display:none;height:100vh}#mainApp.active{display:flex}
+.sidebar{width:var(--sidebar-w);min-width:var(--sidebar-w);background:var(--bg-deep);border-right:1px solid var(--border);display:flex;flex-direction:column;height:100vh;overflow:hidden}
+.sidebar-brand{height:var(--header-h);display:flex;align-items:center;padding:0 20px;gap:12px;border-bottom:1px solid var(--border)}
+.sidebar-brand .brand-icon{width:38px;height:38px;border-radius:10px;background:linear-gradient(135deg,var(--accent),#2563eb);display:flex;align-items:center;justify-content:center;box-shadow:0 4px 12px rgba(59,130,246,.3)}
+.sidebar-brand .brand-icon i{font-size:18px;color:#fff}
+.sidebar-brand h2{font-size:15px;font-weight:700;font-family:'JetBrains Mono','Noto Sans SC',sans-serif}
+.sidebar-section{padding:16px 12px 8px;font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px}
+.sidebar-nav{flex:1;overflow-y:auto;padding:8px 0}
+.nav-item{display:flex;align-items:center;gap:10px;padding:10px 16px;margin:2px 8px;border-radius:var(--radius);cursor:pointer;color:var(--text-secondary);font-size:13px;font-weight:500;transition:var(--transition);border:1px solid transparent}
+.nav-item i{width:18px;text-align:center;font-size:14px}
+.nav-item:hover{background:var(--bg-hover);color:var(--text-primary)}
+.nav-item.active{background:var(--accent-dim);color:var(--accent);border-color:rgba(0,229,160,.1)}
+.nav-item .badge{margin-left:auto;min-width:20px;height:20px;display:flex;align-items:center;justify-content:center;border-radius:10px;font-size:11px;font-weight:600;padding:0 6px}
+.badge-danger{background:var(--danger-dim);color:var(--danger)}
+.sidebar-groups{max-height:200px;overflow-y:auto;padding:0 8px 8px}
+.group-item{display:flex;align-items:center;gap:8px;padding:7px 12px;margin:1px 0;border-radius:6px;cursor:pointer;font-size:13px;color:var(--text-secondary);transition:var(--transition)}
+.group-item:hover{background:var(--bg-hover);color:var(--text-primary)}
+.group-item.active{background:var(--accent-dim);color:var(--accent)}
+.group-item .dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.group-item .count{margin-left:auto;font-size:11px;color:var(--text-muted);font-family:'Consolas','Courier New',monospace}
+.sidebar-footer{padding:12px;border-top:1px solid var(--border)}
+.sidebar-footer .user-info{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:var(--radius)}
+.sidebar-footer .user-avatar{width:34px;height:34px;border-radius:8px;background:var(--bg-elevated);display:flex;align-items:center;justify-content:center;color:var(--accent);font-size:14px}
+.sidebar-footer .user-name{font-size:13px;font-weight:500}
+.sidebar-footer .user-role{font-size:11px;color:var(--text-muted)}
+.logout-btn{margin-left:auto;background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:14px;transition:var(--transition);padding:4px}
+.logout-btn:hover{color:var(--danger)}
+.main-content{flex:1;display:flex;flex-direction:column;overflow:hidden}
+.topbar{height:var(--header-h);min-height:var(--header-h);display:flex;align-items:center;padding:0 24px;gap:16px;border-bottom:1px solid var(--border);background:var(--bg-deep)}
+.topbar-title{font-size:18px;font-weight:700}
+.topbar-subtitle{font-size:13px;color:var(--text-muted);margin-left:4px}
+.topbar-actions{margin-left:auto;display:flex;align-items:center;gap:8px}
+.content-area{flex:1;overflow-y:auto;padding:24px;background:var(--bg-deepest)}
+/* Pages */
+.page{display:none}.page.active{display:block}
+/* Stats */
+.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;margin-bottom:24px}
+.stat-card{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:20px;position:relative;overflow:hidden;transition:var(--transition)}
+.stat-card:hover{border-color:var(--border-light)}
+.stat-card .stat-icon{width:42px;height:42px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:18px;margin-bottom:14px}
+.stat-icon.green{background:var(--accent-dim);color:var(--accent)}.stat-icon.blue{background:var(--info-dim);color:var(--info)}.stat-icon.orange{background:var(--warning-dim);color:var(--warning)}.stat-icon.red{background:var(--danger-dim);color:var(--danger)}
+.stat-card .stat-label{font-size:12px;color:var(--text-muted);font-weight:500;margin-bottom:6px;text-transform:uppercase;letter-spacing:.3px}
+.stat-card .stat-value{font-size:28px;font-weight:700;font-family:'Consolas','Courier New',monospace;line-height:1}
+/* Toolbar */
+.toolbar{display:flex;align-items:center;gap:8px;margin-bottom:16px;flex-wrap:wrap}
+.toolbar-divider{width:1px;height:24px;background:var(--border);margin:0 4px}
+.bulk-bar{display:none;align-items:center;gap:8px;padding:10px 16px;margin-bottom:16px;background:var(--accent-dim);border:1px solid rgba(0,229,160,.2);border-radius:var(--radius);font-size:13px}
+.bulk-bar.active{display:flex}
+/* Table */
+.table-wrap{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden}
+.table-container{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:13px}
+thead{background:var(--bg-elevated)}
+thead th{padding:12px 16px;text-align:left;font-weight:600;font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.3px;white-space:nowrap;border-bottom:1px solid var(--border)}
+tbody tr{border-bottom:1px solid var(--border);transition:var(--transition);cursor:pointer}
+tbody tr:last-child{border-bottom:none}tbody tr:hover{background:var(--bg-hover)}
+tbody td{padding:12px 16px;white-space:nowrap;color:var(--text-secondary)}
+tbody td.hostname{color:var(--text-primary);font-weight:500}
+.status-badge{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600}
+.status-badge.online{background:var(--accent-dim);color:var(--accent)}
+.status-badge.offline{background:rgba(90,97,120,.2);color:var(--text-muted)}
+.pulse{width:6px;height:6px;border-radius:50%;background:currentColor;display:inline-block}
+.online .pulse{animation:pulse 2s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
+.hw-dot{width:8px;height:8px;border-radius:50%;display:inline-block}
+.hw-dot.normal{background:var(--accent)}.hw-dot.warning{background:var(--warning)}.hw-dot.error{background:var(--danger)}.hw-dot.unknown{background:var(--text-muted)}
+.action-btns{display:flex;gap:4px}
+.action-btn{width:30px;height:30px;border:none;border-radius:6px;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:12px;transition:var(--transition);background:var(--bg-base);color:var(--text-muted);border:1px solid var(--border)}
+.action-btn:hover{color:var(--text-primary);border-color:var(--border-light)}
+.action-btn.danger:hover{color:var(--danger);border-color:var(--danger);background:var(--danger-dim)}
+/* Checkbox - 1Panel style */
+.cb-wrap{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border:1.5px solid var(--border-light);border-radius:4px;cursor:pointer;transition:var(--transition);background:var(--bg-deepest);flex-shrink:0;position:relative}
+.cb-wrap:hover{border-color:var(--accent)}
+.cb-wrap .cb-mark{display:none;width:10px;height:6px;border-left:2px solid #fff;border-bottom:2px solid #fff;transform:rotate(-45deg);margin-top:-2px}
+.cb-wrap.checked{background:var(--accent);border-color:var(--accent)}
+.cb-wrap.checked .cb-mark{display:block}
+[data-theme="light"] .cb-wrap{background:#fff;border-color:#d1d5db}
+[data-theme="light"] .cb-wrap.checked{background:var(--accent);border-color:var(--accent)}
+[data-theme="light"] .cb-wrap.checked .cb-mark{border-color:#fff}
+input[type="checkbox"].cb-input{position:absolute;opacity:0;width:0;height:0;pointer-events:none}
+[data-theme="light"] .stat-card{box-shadow:0 1px 3px rgba(0,0,0,.08)}[data-theme="light"] .stat-card:hover{box-shadow:0 4px 12px rgba(0,0,0,.1)}
+[data-theme="light"] .modal{box-shadow:0 10px 40px rgba(0,0,0,.15)}
+[data-theme="light"] .toast{box-shadow:0 4px 12px rgba(0,0,0,.1)}
+/* Modal */
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:1000;align-items:center;justify-content:center;padding:20px}
+.modal-overlay.active{display:flex}
+.modal{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-lg);width:100%;max-height:85vh;display:flex;flex-direction:column;box-shadow:0 25px 60px rgba(0,0,0,.4)}
+.modal-sm{max-width:440px}.modal-md{max-width:600px}.modal-lg{max-width:800px}.modal-xl{max-width:1000px}
+.modal-header{display:flex;align-items:center;justify-content:space-between;padding:18px 24px;border-bottom:1px solid var(--border)}
+.modal-header h3{font-size:16px;font-weight:600}
+.modal-close{width:32px;height:32px;border:none;border-radius:8px;background:var(--bg-base);color:var(--text-muted);cursor:pointer;display:flex;align-items:center;justify-content:center;transition:var(--transition);font-size:14px}
+.modal-close:hover{background:var(--danger-dim);color:var(--danger)}
+.modal-body{padding:24px;overflow-y:auto;flex:1}
+.modal-footer{display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:16px 24px;border-top:1px solid var(--border)}
+/* Tabs */
+.tabs{display:flex;gap:2px;border-bottom:1px solid var(--border);padding:0 24px}
+.tab-item{padding:12px 16px;font-size:13px;font-weight:500;color:var(--text-muted);cursor:pointer;border-bottom:2px solid transparent;transition:var(--transition)}
+.tab-item:hover{color:var(--text-primary)}.tab-item.active{color:var(--accent);border-bottom-color:var(--accent)}
+.tab-content{display:none}.tab-content.active{display:block}
+.inner-tabs{display:flex;gap:2px;border-bottom:1px solid var(--border);margin-bottom:20px}
+.inner-tab{padding:10px 20px;font-size:13px;font-weight:500;color:var(--text-muted);cursor:pointer;border-bottom:2px solid transparent;transition:var(--transition);background:none;border-top:none;border-left:none;border-right:none}
+.inner-tab:hover{color:var(--text-primary)}.inner-tab.active{color:var(--accent);border-bottom-color:var(--accent)}
+/* HW Detail */
+.hw-section{margin-bottom:20px}
+.hw-section-title{font-size:13px;font-weight:600;color:var(--text-primary);margin-bottom:10px;display:flex;align-items:center;gap:8px}
+.hw-section-title i{color:var(--accent);font-size:14px}
+.hw-info-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
+.hw-info-item{display:flex;justify-content:space-between;padding:8px 12px;background:var(--bg-base);border-radius:6px;font-size:12px}
+.hw-info-item .label{color:var(--text-muted)}.hw-info-item .value{color:var(--text-primary);font-weight:500;font-family:'Consolas','Courier New',monospace}
+/* Switch */
+.switch-wrap{display:flex;align-items:center;justify-content:space-between;padding:12px 0}
+.switch-label{font-size:13px}.switch-label .desc{font-size:11px;color:var(--text-muted);margin-top:2px}
+.switch{position:relative;width:44px;height:24px;flex-shrink:0}.switch input{opacity:0;width:0;height:0}
+.switch .slider{position:absolute;inset:0;background:var(--bg-elevated);border:1px solid var(--border);border-radius:12px;cursor:pointer;transition:var(--transition)}
+.switch .slider::before{content:'';position:absolute;width:18px;height:18px;border-radius:50%;background:var(--text-muted);top:2px;left:2px;transition:var(--transition)}
+.switch input:checked+.slider{background:var(--accent-dim);border-color:var(--accent)}
+.switch input:checked+.slider::before{background:var(--accent);transform:translateX(20px)}
+/* Alert items */
+.alert-item{display:flex;align-items:flex-start;gap:12px;padding:14px;margin-bottom:8px;background:var(--bg-base);border-radius:var(--radius);border-left:3px solid;transition:var(--transition)}
+.alert-item:hover{background:var(--bg-elevated)}
+.alert-item.critical{border-left-color:var(--danger)}.alert-item.warning{border-left-color:var(--warning)}.alert-item.info{border-left-color:var(--info)}
+.alert-icon{width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0}
+.alert-item.critical .alert-icon{background:var(--danger-dim);color:var(--danger)}
+.alert-item.warning .alert-icon{background:var(--warning-dim);color:var(--warning)}
+.alert-item.info .alert-icon{background:var(--info-dim);color:var(--info)}
+.alert-text{font-size:13px;line-height:1.5}.alert-time{font-size:11px;color:var(--text-muted);margin-top:4px}
+.ai-result{background:var(--bg-base);border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-top:12px}
+.ai-result .ai-header{display:flex;align-items:center;gap:8px;margin-bottom:12px;font-size:13px;font-weight:600}
+.ai-result .ai-header i{color:var(--accent)}.ai-result .ai-body{font-size:13px;line-height:1.7;color:var(--text-secondary)}
+.config-card{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:24px;margin-bottom:20px}
+.config-card h3{font-size:15px;font-weight:600;margin-bottom:16px;display:flex;align-items:center;gap:8px;padding-bottom:12px;border-bottom:1px solid var(--border)}
+.config-card h3 i{color:var(--accent)}
+.hw-monitor-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.hw-monitor-item{display:flex;align-items:center;gap:8px;padding:10px 12px;background:var(--bg-base);border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;transition:var(--transition);font-size:13px}
+.hw-monitor-item:hover{border-color:var(--border-light)}
+.hw-monitor-item.active{border-color:var(--accent);background:var(--accent-dim)}
+.check-icon{width:18px;height:18px;border-radius:4px;border:1.5px solid var(--border-light);display:flex;align-items:center;justify-content:center;font-size:10px;color:transparent;transition:var(--transition)}
+.hw-monitor-item.active .check-icon{background:var(--accent);border-color:var(--accent);color:#0a0c14}
+.empty-state{text-align:center;padding:60px 20px;color:var(--text-muted)}.empty-state i{font-size:48px;margin-bottom:16px;opacity:.3}.empty-state p{font-size:14px}
+.toast-container{position:fixed;top:20px;right:20px;z-index:2000;display:flex;flex-direction:column;gap:8px}
+.toast{display:flex;align-items:center;gap:10px;padding:12px 16px;min-width:280px;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);box-shadow:0 10px 30px rgba(0,0,0,.3);font-size:13px}
+.toast.success{border-left:3px solid var(--accent)}.toast.error{border-left:3px solid var(--danger)}.toast.warning{border-left:3px solid var(--warning)}.toast.info{border-left:3px solid var(--info)}
+.toast-icon{font-size:16px}.toast.success .toast-icon{color:var(--accent)}.toast.error .toast-icon{color:var(--danger)}.toast.warning .toast-icon{color:var(--warning)}.toast.info .toast-icon{color:var(--info)}
+.page-header{display:flex;align-items:center;gap:12px;margin-bottom:24px}
+.page-header-icon{width:44px;height:44px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:20px}
+.page-header h2{font-size:20px;font-weight:700}.page-header p{font-size:13px;color:var(--text-muted);margin-top:2px}
+.steps{display:flex;align-items:center;gap:12px;margin-bottom:24px}
+.step{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text-muted)}.step.active{color:var(--accent)}
+.step .step-num{width:24px;height:24px;border-radius:50%;background:var(--bg-elevated);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:600}
+.step.active .step-num{background:var(--accent);border-color:var(--accent);color:#0a0c14}
+.step-arrow{color:var(--text-muted);font-size:12px}
+.table-footer{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-top:1px solid var(--border);font-size:12px;color:var(--text-muted)}
+@media(max-width:768px){.sidebar{display:none}.stats-grid{grid-template-columns:1fr 1fr}.hw-monitor-grid{grid-template-columns:1fr 1fr}.hw-info-grid{grid-template-columns:1fr}}
+</style>
 </head>
 <body>
-    <div class="header">
-        <div style="display:flex;justify-content:space-between;align-items:center;">
-            <div>
-                <h1>HwMon - 硬件监控系统</h1>
-                <p>实时监控和管理所有客户端硬件信息</p>
-            </div>
-            <div style="display:flex;align-items:center;gap:15px;">
-                <span id="userInfo" style="font-size:14px;opacity:0.9;"></span>
-                <button class="btn btn-secondary" onclick="logout()" style="padding:8px 16px;font-size:13px;">退出登录</button>
-            </div>
-        </div>
+<!-- Login -->
+<div id="loginPage">
+  <div class="login-bg"></div>
+  <div class="login-card">
+    <div class="login-logo">
+      <div class="icon-wrap" style="font-size:24px;color:#fff;font-weight:700">H</div>
+      <h1>HwMon</h1>
+      <p>硬件监控系统 v5.0</p>
     </div>
+    <form id="loginForm">
+      <div class="form-group"><label>用户名</label><input type="text" class="form-input" id="loginUser" placeholder="请输入用户名" required></div>
+      <div class="form-group"><label>密码</label><input type="password" class="form-input" id="loginPass" placeholder="请输入密码" required></div>
+      <button type="submit" class="btn btn-primary btn-block" style="height:48px;font-size:15px;margin-top:8px">登录</button>
+    </form>
+    <div style="text-align:center;margin-top:24px;color:var(--text-muted);font-size:12px;font-family:'Consolas','Courier New',monospace">HwMon Server v5.0.0-20260526</div>
+  </div>
+</div>
 
-    <div class="container">
-        <div class="main-layout">
-            <!-- 左侧分组栏 -->
-            <div class="sidebar">
-                <h3>📁 分组列表</h3>
-                <ul class="group-list" id="sidebarGroupList">
-                    <li class="loading">加载中...</li>
-                </ul>
-            </div>
-
-            <!-- 右侧内容区 -->
-            <div class="content-area">
-                <div class="stats">
-                    <div class="stat-card">
-                        <h3>总客户端数</h3>
-                        <div class="value" id="totalClients">0</div>
-                    </div>
-                    <div class="stat-card">
-                        <h3>分组数量</h3>
-                        <div class="value" id="totalGroups">0</div>
-                    </div>
-                    <div class="stat-card">
-                        <h3>在线客户端</h3>
-                        <div class="value" id="onlineClients">0</div>
-                    </div>
-                </div>
-
-                <div class="toolbar">
-                    <div class="filter-group">
-                        <button class="btn btn-secondary" onclick="loadClients()">刷新</button>
-                    </div>
-                    <div class="filter-group">
-                        <button class="btn btn-warning" onclick="collectAll()" id="btnCollectAll">一键采集</button>
-                        <button class="btn btn-secondary" onclick="showGroupManageModal()">分组管理</button>
-                        <button class="btn btn-success" onclick="showCreateGroupModal()">新建分组</button>
-                        <button class="btn btn-primary" onclick="exportData('excel')">导出Excel</button>
-                        <button class="btn btn-primary" onclick="exportData('csv')">导出CSV</button>
-                        <button class="btn btn-primary" onclick="exportData('json')">导出JSON</button>
-                        <button class="btn btn-danger" onclick="showAlertCenterModal()" style="position:relative;">
-                            告警中心
-                            <span id="alertBadge" class="badge-alert" style="display:none;position:absolute;top:-8px;right:-8px;">0</span>
-                        </button>
-                        <button class="btn btn-info" onclick="showEmailConfigModal()">邮件配置</button>
-                    </div>
-                </div>
-
-                <!-- 批量操作工具栏 -->
-                <div class="batch-toolbar" id="batchToolbar">
-                    <span class="selected-count">已选 <span id="selectedCount">0</span> 项</span>
-                    <button class="btn btn-warning btn-small" onclick="batchCollect()">批量采集</button>
-                    <button class="btn btn-primary btn-small" onclick="batchExportExcel()">批量导出Excel</button>
-                    <button class="btn btn-info btn-small" onclick="showBatchGroupModal()">批量分配分组</button>
-                    <button class="btn btn-danger btn-small" onclick="batchDelete()">批量删除</button>
-                    <button class="btn btn-secondary btn-small" onclick="clearSelection()">取消选择</button>
-                </div>
-
-                <div class="card">
-                    <div class="card-header">
-                        <h2>客户端列表</h2>
-                        <span style="font-size:12px;color:#718096;">点击行首复选框选择客户端</span>
-                    </div>
-                    <div class="table-container">
-                        <table>
-                            <thead>
-                                <tr>
-                                    <th style="width:40px;"><input type="checkbox" id="selectAll" onchange="toggleSelectAll(this.checked)" title="全选"></th>
-                                    <th onclick="sortBy('hostname')" style="cursor:pointer;user-select:none;">主机名 <span id="sort_hostname"></span></th>
-                                    <th onclick="sortBy('local_ip')" style="cursor:pointer;user-select:none;">IP地址 <span id="sort_local_ip"></span></th>
-                                    <th onclick="sortBy('group_name')" style="cursor:pointer;user-select:none;">分组 <span id="sort_group_name"></span></th>
-                                    <th>硬件状态</th>
-                                    <th>上报方式</th>
-                                    <th onclick="sortBy('last_report')" style="cursor:pointer;user-select:none;">最后上报时间 <span id="sort_last_report"></span></th>
-                                    <th>状态</th>
-                                    <th>操作</th>
-                                </tr>
-                            </thead>
-                            <tbody id="clientTableBody">
-                                <tr><td colspan="9" class="loading">加载中...</td></tr>
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-        </div>
+<!-- Main App -->
+<div id="mainApp">
+  <aside class="sidebar">
+    <div class="sidebar-brand"><div class="brand-icon" style="font-size:16px;color:#fff;font-weight:700">H</div><h2>HwMon</h2></div>
+    <nav class="sidebar-nav">
+      <div class="sidebar-section">导航</div>
+      <div class="nav-item active" data-page="dashboard" onclick="switchPage('dashboard',this)"> 仪表盘</div>
+      <div class="nav-item" data-page="clients" onclick="switchPage('clients',this)">客户端 <span class="badge" id="navClientCount">0</span></div>
+      <div class="nav-item" data-page="alerts" onclick="switchPage('alerts',this)">告警中心 <span class="badge badge-danger" id="navAlertCount">0</span></div>
+      <div class="nav-item" data-page="probe" onclick="switchPage('probe',this)">主机探测</div>
+      <div class="nav-item" data-page="ai" onclick="switchPage('ai',this)">AI 研判</div>
+      <div class="nav-item" data-page="config" onclick="switchPage('config',this)">系统配置</div>
+      <div class="sidebar-section">分组</div>
+      <div class="sidebar-groups" id="sidebarGroups"></div>
+    </nav>
+    <div class="sidebar-footer">
+      <div style="display:flex;align-items:center;gap:8px;padding:8px 10px;margin-bottom:8px;cursor:pointer;border-radius:var(--radius);background:var(--bg-elevated)" onclick="toggleTheme()">
+        <span style="font-size:14px" id="themeIcon">☀</span>
+        <span style="font-size:12px;color:var(--text-secondary)" id="themeLabel">亮色模式</span>
+      </div>
+      <div class="user-info">
+        <div class="user-avatar" style="font-size:13px;font-weight:600;color:var(--accent)">A</div>
+        <div><div class="user-name" id="sidebarUser">Admin</div><div class="user-role">系统管理员</div></div>
+        <button class="logout-btn" onclick="doLogout()" title="退出">⏻</button>
+      </div>
     </div>
+  </aside>
 
-    <!-- 硬件详情模态框 -->
-    <div class="modal" id="detailModal">
-        <div class="modal-content modal-content-lg">
-            <div class="modal-header">
-                <h3 id="modalTitle">硬件详情</h3>
-                <button class="modal-close" onclick="closeModal('detailModal')">&times;</button>
+  <div class="main-content">
+    <header class="topbar">
+      <span class="topbar-title" id="topTitle">仪表盘</span>
+      <span class="topbar-subtitle" id="topSub">实时监控</span>
+      <div class="topbar-actions" id="topActions">
+        <button class="btn btn-secondary btn-sm" onclick="loadAll()">刷新</button>
+        <button class="btn btn-primary btn-sm" onclick="doCollectAll()">一键采集</button>
+      </div>
+    </header>
+    <div class="content-area">
+
+      <!-- Dashboard -->
+      <div class="page active" id="page-dashboard">
+        <div class="stats-grid">
+          <div class="stat-card"><div class="stat-icon green" style="font-size:16px;font-weight:700;color:var(--accent)">PC</div><div class="stat-label">总客户端</div><div class="stat-value" id="dsTotal">-</div></div>
+          <div class="stat-card"><div class="stat-icon blue" style="font-size:16px;font-weight:700;color:var(--info)">G</div><div class="stat-label">分组数量</div><div class="stat-value" id="dsGroups">-</div></div>
+          <div class="stat-card"><div class="stat-icon orange" style="font-size:16px;font-weight:700;color:var(--warning)">ON</div><div class="stat-label">在线客户端</div><div class="stat-value" id="dsOnline">-</div></div>
+          <div class="stat-card"><div class="stat-icon red" style="font-size:16px;font-weight:700;color:var(--danger)">!</div><div class="stat-label">未解决告警</div><div class="stat-value" id="dsAlerts">-</div></div>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px">
+          <div class="stat-card" style="cursor:pointer" onclick="switchPage('clients',document.querySelector('[data-page=clients]'))"><div style="display:flex;align-items:center;gap:16px"><div class="stat-icon blue">PC</div><div><div style="font-size:15px;font-weight:600">客户端管理</div><div style="font-size:12px;color:var(--text-muted);margin-top:4px">查看和管理所有客户端硬件信息</div></div></div></div>
+          <div class="stat-card" style="cursor:pointer" onclick="switchPage('alerts',document.querySelector('[data-page=alerts]'))"><div style="display:flex;align-items:center;gap:16px"><div class="stat-icon red" style="font-size:16px;font-weight:700;color:var(--danger)">!</div><div><div style="font-size:15px;font-weight:600">告警中心</div><div style="font-size:12px;color:var(--text-muted);margin-top:4px">查看和处理硬件变更告警</div></div></div></div>
+          <div class="stat-card" style="cursor:pointer" onclick="switchPage('ai',document.querySelector('[data-page=ai]'))"><div style="display:flex;align-items:center;gap:16px"><div class="stat-icon orange" style="font-size:16px;font-weight:700;color:var(--warning)">AI</div><div><div style="font-size:15px;font-weight:600">AI 研判</div><div style="font-size:12px;color:var(--text-muted);margin-top:4px">AI 智能分析硬件异常</div></div></div></div>
+          <div class="stat-card" style="cursor:pointer" onclick="switchPage('config',document.querySelector('[data-page=config]'))"><div style="display:flex;align-items:center;gap:16px"><div class="stat-icon green" style="font-size:16px;font-weight:700;color:var(--accent)">*</div><div><div style="font-size:15px;font-weight:600">系统配置</div><div style="font-size:12px;color:var(--text-muted);margin-top:4px">邮件通知、告警规则设置</div></div></div></div>
+        </div>
+      </div>
+
+      <!-- Clients -->
+      <div class="page" id="page-clients">
+        <div class="toolbar">
+          <button class="btn btn-secondary btn-sm" onclick="showGroupManage()">分组管理</button>
+          <button class="btn btn-secondary btn-sm" onclick="showCreateGroup()">新建分组</button>
+          <button class="btn btn-secondary btn-sm" onclick="doExport('excel')">Excel</button>
+          <button class="btn btn-secondary btn-sm" onclick="doExport('csv')">CSV</button>
+          <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
+            <span style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px" onclick="var w=document.getElementById('clientSelectAllWrap');var i=w.querySelector('.cb-input');i.checked=!i.checked;syncCb(w);toggleSelAll()"><span class="cb-wrap" id="clientSelectAllWrap"><span class="cb-mark"></span><input type="checkbox" class="cb-input" id="selAll"></span> 全选</span>
+            <span id="clientSelectedCount" style="font-size:12px;color:var(--text-muted)">已选 0 项</span>
+          </div>
+        </div>
+        <div class="bulk-bar" id="bulkBar"><span>已选 <strong id="bulkCount">0</strong> 项</span><button class="btn btn-danger btn-sm" onclick="bulkDelete()">批量删除</button><button class="btn btn-ghost btn-sm" onclick="clearSel()">✕</button></div>
+        <div class="table-wrap">
+          <div class="table-container"><table><thead><tr><th style="width:40px" id="th-selAll"></th><th class="sortable" id="th-hostname" onclick="sortBy('hostname')">主机名<span class="sort-icon"><i class="sort-asc"></i><i class="sort-desc"></i></span></th><th class="sortable" id="th-local_ip" onclick="sortBy('local_ip')">IP地址<span class="sort-icon"><i class="sort-asc"></i><i class="sort-desc"></i></span></th><th class="sortable" id="th-group_name" onclick="sortBy('group_name')">分组<span class="sort-icon"><i class="sort-asc"></i><i class="sort-desc"></i></span></th><th class="sortable" id="th-last_report" onclick="sortBy('last_report')">最后上报<span class="sort-icon"><i class="sort-asc"></i><i class="sort-desc"></i></span></th><th class="sortable" id="th-online" onclick="sortBy('online')">状态<span class="sort-icon"><i class="sort-asc"></i><i class="sort-desc"></i></span></th><th>操作</th></tr></thead><tbody id="clientTbody"></tbody></table></div>
+          <div class="table-footer"><span id="tblInfo">-</span></div>
+        </div>
+      </div>
+
+      <!-- Alerts -->
+      <div class="page" id="page-alerts">
+        <div class="page-header">
+          <div class="page-header-icon" style="background:var(--danger-dim);color:var(--danger);font-size:16px;font-weight:700">!</div>
+          <div><h2>告警中心</h2><p>硬件变更告警</p></div>
+          <div style="margin-left:auto;display:flex;gap:8px">
+            <button class="btn btn-secondary btn-sm" onclick="resolveAllAlerts()">一键解决</button>
+          </div>
+        </div>
+        <div class="inner-tabs">
+          <button class="inner-tab active" onclick="switchITab(this,'alertTabs','tabUnresolved')">未解决 <span id="unresolvedN" style="color:var(--danger);font-weight:600">0</span></button>
+          <button class="inner-tab" onclick="switchITab(this,'alertTabs','tabResolved')">已解决</button>
+        </div>
+        <div class="tab-content active" id="tabUnresolved"></div>
+        <div class="tab-content" id="tabResolved"></div>
+      </div>
+
+      <!-- AI -->
+      <div class="page" id="page-ai">
+        <div class="page-header"><div class="page-header-icon" style="background:var(--info-dim);color:var(--info);font-size:14px;font-weight:700">AI</div><div><h2>AI 研判中心</h2><p>AI 智能分析进程告警</p></div></div>
+        <div class="inner-tabs">
+          <button class="inner-tab active" onclick="switchITab(this,'aiTabs','tabAiAlerts')">进程告警</button>
+          <button class="inner-tab" onclick="switchITab(this,'aiTabs','tabAiHosts')">AI 监控主机</button>
+          <button class="inner-tab" onclick="switchITab(this,'aiTabs','tabAiSettings')">AI 设置</button>
+        </div>
+        <div class="tab-content active" id="tabAiAlerts">
+          <div style="margin-bottom:12px;display:flex;gap:8px;">
+            <button class="btn btn-secondary btn-small" onclick="bulkMarkProcessed()">批量标记已处理</button>
+            <button class="btn btn-info btn-small" onclick="manualAnalyzeAll()">手动触发全部AI分析</button>
+          </div>
+          <div id="aiAlertList"></div>
+        </div>
+        <div class="tab-content" id="tabAiHosts">
+          <p style="font-size:13px;color:var(--text-muted);margin-bottom:16px">只有在此列表中的主机产生的进程告警才会触发 AI 研判</p>
+          <div style="margin-bottom:16px"><button class="btn btn-primary btn-sm" onclick="showAddAiHost()">添加主机</button></div>
+          <div id="aiHostList"></div>
+        </div>
+        <div class="tab-content" id="tabAiSettings">
+          <div class="config-card"><h3>功能开关</h3>
+            <div class="switch-wrap"><div class="switch-label">AI 研判<div class="desc">开启后，符合条件的告警将调用 AI 进行分析</div></div><label class="switch"><input type="checkbox" id="aiEnabled"><span class="slider"></span></label></div>
+            <div class="switch-wrap"><div class="switch-label">自动分析<div class="desc">收到告警后自动触发</div></div><label class="switch"><input type="checkbox" id="aiAuto"><span class="slider"></span></label></div>
+          </div>
+          <div class="config-card"><h3>API 配置</h3>
+            <div class="form-group"><label>API 地址</label><input type="text" class="form-input" id="aiUrl" placeholder="https://api.deepseek.com/v1"></div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+              <div class="form-group"><label>API Key</label><input type="password" class="form-input" id="aiKey" placeholder="sk-..."></div>
+              <div class="form-group"><label>模型</label><input type="text" class="form-input" id="aiModel" placeholder="deepseek-chat"></div>
             </div>
-            <div class="modal-body">
-                <div style="margin-bottom:15px;text-align:right;">
-                    <button class="btn btn-success btn-small" onclick="setBaselineForCurrentClient()">设为基准</button>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+              <div class="form-group"><label>最大 Token</label><input type="number" class="form-input" id="aiTokens" value="2000"></div>
+              <div class="form-group"><label>温度</label><input type="number" class="form-input" id="aiTemp" value="0.3" step="0.1" min="0" max="2"></div>
+            </div>
+            <div class="form-group"><label>系统提示词</label><textarea class="form-textarea" id="aiPrompt" rows="4" placeholder="留空使用默认提示词"></textarea></div>
+          </div>
+          <div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn btn-secondary" onclick="fetchModels()">获取模型列表</button><button class="btn btn-secondary" onclick="testAi()">测试连接</button><button class="btn btn-primary" onclick="saveAi()">保存配置</button></div>
+        </div>
+      </div>
+
+      <!-- Probe Page -->
+      <div class="page" id="page-probe">
+        <div class="page-header">
+          <div class="page-header-icon" style="background:var(--info-dim);color:var(--info);font-size:14px;font-weight:700">NET</div>
+          <div><h2>主机探测</h2><p>定期探测主机在线状态（Ping / HTTP / TCP端口）</p></div>
+          <div style="margin-left:auto"><button class="btn btn-primary btn-sm" onclick="showAddProbeModal()">添加探测目标</button></div>
+        </div>
+        <div class="inner-tabs">
+          <button class="inner-tab active" onclick="switchITab(this,'probeTabs','tabProbeTargets')">探测目标</button>
+          <button class="inner-tab" onclick="switchITab(this,'probeTabs','tabProbeAlerts')">探测告警 <span id="probeAlertN" style="color:var(--danger);font-weight:600">0</span></button>
+        </div>
+        <div class="tab-content active" id="tabProbeTargets">
+          <div id="probeTargetList"><div class="empty-state"><p>暂无探测目标，请点击上方"添加探测目标"按钮</p></div></div>
+        </div>
+        <div class="tab-content" id="tabProbeAlerts">
+          <div style="margin-bottom:12px;display:flex;gap:8px;align-items:center">
+            <span style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px" onclick="var w=this.querySelector('.cb-wrap');var i=w.querySelector('.cb-input');i.checked=!i.checked;syncCb(w);toggleSelectAllProbeAlerts(i.checked)"><span class="cb-wrap"><span class="cb-mark"></span><input type="checkbox" class="cb-input" id="selectAllProbeAlerts"></span> 全选</span>
+            <button class="btn btn-secondary btn-small" onclick="batchResolveProbeAlerts()">批量标记已处理</button>
+            <button class="btn btn-danger btn-small" onclick="deleteSelectedProbeAlerts()">删除选中</button>
+            <span id="probeAlertSelectedCount" style="font-size:12px;color:var(--text-muted)">已选 0 项</span>
+          </div>
+          <div id="probeAlertList"><div class="empty-state"><p>暂无探测告警</p></div></div>
+        </div>
+      </div>
+
+      <!-- Config -->
+      <div class="page" id="page-config">
+        <div class="page-header"><div class="page-header-icon" style="background:var(--accent-dim);color:var(--accent);font-size:16px;font-weight:700">*</div><div><h2>系统配置</h2><p>邮件通知、告警规则</p></div></div>
+        <div class="inner-tabs">
+          <button class="inner-tab active" onclick="switchITab(this,'cfgTabs','tabEmail')">邮件配置</button>
+          <button class="inner-tab" onclick="switchITab(this,'cfgTabs','tabAlertCfg')">告警设置</button>
+        </div>
+        <div class="tab-content active" id="tabEmail">
+          <div class="config-card"><h3>SMTP 配置</h3>
+            <div class="form-group"><label>SMTP 服务器</label><input type="text" class="form-input" id="smtpHost" placeholder="smtp.qq.com"></div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+              <div class="form-group"><label>端口</label><input type="number" class="form-input" id="smtpPort" value="465"></div>
+              <div class="form-group"><label>发件人名称</label><input type="text" class="form-input" id="smtpName" value="硬件监控系统"></div>
+            </div>
+            <div class="form-group"><label>发件人邮箱</label><input type="email" class="form-input" id="smtpUser"></div>
+            <div class="form-group"><label>授权码/密码</label><input type="password" class="form-input" id="smtpPass"></div>
+            <div class="form-group"><label>收件人（逗号分隔）</label><input type="text" class="form-input" id="smtpTo"></div>
+            <div class="switch-wrap"><div class="switch-label">启用邮件告警</div><label class="switch"><input type="checkbox" id="smtpOn"><span class="slider"></span></label></div>
+          </div>
+          <div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn btn-secondary" onclick="testEmail()">测试邮件</button><button class="btn btn-primary" onclick="saveEmail()">保存</button></div>
+        </div>
+        <div class="tab-content" id="tabAlertCfg">
+          <div class="config-card"><h3>功能开关</h3>
+            <div class="switch-wrap"><div class="switch-label">告警记录</div><label class="switch"><input type="checkbox" id="acAlertOn"><span class="slider"></span></label></div>
+            <div class="switch-wrap"><div class="switch-label">邮件通知</div><label class="switch"><input type="checkbox" id="acEmailOn"><span class="slider"></span></label></div>
+          </div>
+          <div class="config-card"><h3>监控硬件类型</h3>
+            <div class="hw-monitor-grid" id="hwMonGrid"></div>
+          </div>
+          <div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn btn-secondary" onclick="resetAlertCfg()">恢复默认</button><button class="btn btn-primary" onclick="saveAlertCfg()">保存设置</button></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+
+      <!-- Add Probe Target Modal -->
+      <div class="modal-overlay" id="addProbeModal">
+        <div class="modal modal-md">
+          <div class="modal-header"><h3>添加探测目标</h3><button class="modal-close" onclick="closeModal('addProbeModal')">✕</button></div>
+          <div class="modal-body">
+            <form id="addProbeForm">
+              <div class="form-group"><label>名称</label><input type="text" class="form-input" id="probeName" placeholder="例：Web服务器" required></div>
+              <div class="form-group"><label>地址 (IP/域名)</label><input type="text" class="form-input" id="probeHost" placeholder="192.168.1.100 或 example.com" required></div>
+              <div class="form-group"><label>分组</label><select class="form-select" id="probeGroup"><option value="">未分组</option></select></div>
+              <div class="form-group">
+                <label>探测方式</label>
+                <select class="form-select" id="probeType" onchange="onProbeTypeChange()">
+                  <option value="ping">Ping (ICMP)</option>
+                  <option value="http">HTTP / HTTPS</option>
+                  <option value="tcp">TCP 端口</option>
+                </select>
+              </div>
+              <!-- HTTP/HTTPS 选项 -->
+              <div id="probeHttpOpts" style="display:none">
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+                  <div class="form-group"><label>协议</label><select class="form-select" id="probeProtocol"><option value="http">HTTP</option><option value="https">HTTPS</option></select></div>
+                  <div class="form-group"><label>端口</label><input type="number" class="form-input" id="probePort" value="80"></div>
                 </div>
-                <div class="tabs">
-                    <button class="tab active" onclick="switchTab(this, 'tabHardware')">硬件信息</button>
-                    <button class="tab" onclick="switchTab(this, 'tabHistory')">历史记录</button>
-                    <button class="tab" onclick="switchTab(this, 'tabAlerts')">告警记录</button>
+                <div class="form-group"><label>路径</label><input type="text" class="form-input" id="probePath" value="/" placeholder="/"></div>
+              </div>
+              <!-- TCP 选项 -->
+              <div id="probeTcpOpts" style="display:none">
+                <div class="form-group"><label>端口</label><input type="number" class="form-input" id="probeTcpPort" value="8080" placeholder="8080"></div>
+              </div>
+              <div class="form-group"><label>备注</label><input type="text" class="form-input" id="probeDesc" placeholder="可选"></div>
+            </form>
+          </div>
+          <div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal('addProbeModal')">取消</button><button class="btn btn-primary" onclick="addProbeTarget()">添加</button></div>
+        </div>
+      </div>
+
+      <!-- Edit Probe Modal -->
+      <div class="modal-overlay" id="editProbeModal">
+        <div class="modal modal-md">
+          <div class="modal-header"><h3>编辑探测目标</h3><button class="modal-close" onclick="closeModal('editProbeModal')">✕</button></div>
+          <div class="modal-body">
+            <form id="editProbeForm">
+              <div class="form-group"><label>名称</label><input type="text" class="form-input" id="editProbeName" placeholder="例：Web服务器" required></div>
+              <div class="form-group"><label>地址 (IP/域名)</label><input type="text" class="form-input" id="editProbeHost" placeholder="192.168.1.100 或 example.com" required></div>
+              <div class="form-group"><label>分组</label><select class="form-select" id="editProbeGroup"><option value="">未分组</option></select></div>
+              <div class="form-group">
+                <label>探测方式</label>
+                <select class="form-select" id="editProbeType" onchange="onEditProbeTypeChange()">
+                  <option value="ping">Ping (ICMP)</option>
+                  <option value="http">HTTP / HTTPS</option>
+                  <option value="tcp">TCP 端口</option>
+                </select>
+              </div>
+              <!-- HTTP/HTTPS 选项 -->
+              <div id="editProbeHttpOpts" style="display:none">
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+                  <div class="form-group"><label>端口</label><input type="number" class="form-input" id="editProbePort" value="80"></div>
                 </div>
-                <div class="tab-content active" id="tabHardware"><div class="loading">加载中...</div></div>
-                <div class="tab-content" id="tabHistory"><div class="loading">加载中...</div></div>
-                <div class="tab-content" id="tabAlerts"><div class="loading">加载中...</div></div>
-            </div>
+                <div class="form-group"><label>路径</label><input type="text" class="form-input" id="editProbePath" value="/" placeholder="/"></div>
+              </div>
+              <!-- TCP 选项 -->
+              <div id="editProbeTcpOpts" style="display:none">
+                <div class="form-group"><label>端口</label><input type="number" class="form-input" id="editProbeTcpPort" value="8080" placeholder="8080"></div>
+              </div>
+              <div class="form-group"><label>备注</label><input type="text" class="form-input" id="editProbeDesc" placeholder="可选"></div>
+            </form>
+          </div>
+          <div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal('editProbeModal')">取消</button><button class="btn btn-primary" onclick="saveEditProbeTarget()">保存</button></div>
         </div>
+      </div>
+
+<!-- Detail Modal -->
+<div class="modal-overlay" id="detailModal">
+  <div class="modal modal-lg">
+    <div class="modal-header"><h3>硬件详情 - <span id="detailHost">-</span></h3><button class="modal-close" onclick="closeM('detailModal')">✕</button></div>
+    <div class="tabs"><div class="tab-item active" onclick="switchTab(this,'dtlTab','dtlHw')">硬件信息</div><div class="tab-item" onclick="switchTab(this,'dtlTab','dtlHist')">历史记录</div><div class="tab-item" onclick="switchTab(this,'dtlTab','dtlAlert')">告警记录</div></div>
+    <div class="modal-body">
+      <div class="tab-content active" id="dtlHw"><div style="margin-bottom:12px"><button class="btn btn-secondary btn-sm" onclick="doSetBaseline()">设为基准</button></div><div id="dtlHwContent"></div></div>
+      <div class="tab-content" id="dtlHist"><div id="dtlHistContent"></div></div>
+      <div class="tab-content" id="dtlAlert"><div id="dtlAlertContent"></div></div>
     </div>
+  </div>
+</div>
 
-    <!-- 创建分组模态框 -->
-    <div class="modal" id="createGroupModal">
-        <div class="modal-content" style="max-width: 500px;">
-            <div class="modal-header">
-                <h3>创建新分组</h3>
-                <button class="modal-close" onclick="closeModal('createGroupModal')">&times;</button>
-            </div>
-            <div class="modal-body">
-                <form id="createGroupForm">
-                    <div class="form-group"><label>分组名称</label><input type="text" id="groupName" required></div>
-                    <div class="form-group"><label>描述</label><textarea id="groupDescription"></textarea></div>
-                    <button type="submit" class="btn btn-primary">创建</button>
-                </form>
-            </div>
-        </div>
-    </div>
+<!-- Group Manage Modal -->
+<div class="modal-overlay" id="groupModal"><div class="modal modal-md"><div class="modal-header"><h3>分组管理</h3><button class="modal-close" onclick="closeM('groupModal')">✕</button></div><div class="modal-body" id="groupBody"></div></div></div>
 
-    <!-- 编辑分组模态框 -->
-    <div class="modal" id="editGroupModal">
-        <div class="modal-content" style="max-width: 500px;">
-            <div class="modal-header">
-                <h3>编辑分组</h3>
-                <button class="modal-close" onclick="closeModal('editGroupModal')">&times;</button>
-            </div>
-            <div class="modal-body">
-                <form id="editGroupForm">
-                    <input type="hidden" id="editGroupId">
-                    <div class="form-group"><label>分组名称</label><input type="text" id="editGroupName" required></div>
-                    <div class="form-group"><label>描述</label><textarea id="editGroupDescription"></textarea></div>
-                    <button type="submit" class="btn btn-primary">保存</button>
-                </form>
-            </div>
-        </div>
-    </div>
+<!-- Create Group Modal -->
+<div class="modal-overlay" id="newGroupModal"><div class="modal modal-sm"><div class="modal-header"><h3>新建分组</h3><button class="modal-close" onclick="closeM('newGroupModal')">✕</button></div><div class="modal-body"><div class="form-group"><label>名称</label><input type="text" class="form-input" id="ngName"></div><div class="form-group"><label>描述</label><textarea class="form-textarea" id="ngDesc" rows="3"></textarea></div></div><div class="modal-footer"><button class="btn btn-secondary" onclick="closeM('newGroupModal')">取消</button><button class="btn btn-primary" onclick="doCreateGroup()">创建</button></div></div></div>
 
-    <!-- 分组管理模态框 -->
-    <div class="modal" id="groupManageModal">
-        <div class="modal-content" style="max-width: 600px;">
-            <div class="modal-header">
-                <h3>分组管理</h3>
-                <button class="modal-close" onclick="closeModal('groupManageModal')">&times;</button>
-            </div>
-            <div class="modal-body" id="groupManageBody">
-                <div class="loading">加载中...</div>
-            </div>
-        </div>
-    </div>
+<!-- Assign Group Modal -->
+<div class="modal-overlay" id="assignModal"><div class="modal modal-sm"><div class="modal-header"><h3>分配到分组</h3><button class="modal-close" onclick="closeM('assignModal')">✕</button></div><div class="modal-body"><div class="form-group"><label>选择分组</label><select class="form-select" id="assignSel"></select></div></div><div class="modal-footer"><button class="btn btn-secondary" onclick="closeM('assignModal')">取消</button><button class="btn btn-primary" onclick="doAssign()">确定</button></div></div></div>
 
-    <!-- 分配分组模态框 -->
-    <div class="modal" id="assignGroupModal">
-        <div class="modal-content" style="max-width: 500px;">
-            <div class="modal-header">
-                <h3>分配到分组</h3>
-                <button class="modal-close" onclick="closeModal('assignGroupModal')">&times;</button>
-            </div>
-            <div class="modal-body">
-                <form id="assignGroupForm">
-                    <div class="form-group"><label>选择分组</label><select id="assignGroupSelect" required></select></div>
-                    <input type="hidden" id="assignClientId">
-                    <button type="submit" class="btn btn-primary">确定</button>
-                </form>
-            </div>
-        </div>
-    </div>
+<!-- Add AI Host Modal -->
+<div class="modal-overlay" id="addAiModal"><div class="modal modal-md"><div class="modal-header"><h3>添加 AI 监控主机</h3><button class="modal-close" onclick="closeM('addAiModal')">✕</button></div><div class="modal-body">
+  <div class="steps"><div class="step active" id="aiS1"><span class="step-num">1</span> 选择分组</div><div class="step-arrow">▶️</div><div class="step" id="aiS2"><span class="step-num">2</span> 选择主机</div></div>
+  <div id="aiStep1"></div>
+  <div id="aiStep2" style="display:none">
+    <button class="btn btn-ghost btn-sm" onclick="aiStepBack()" style="margin-bottom:12px">返回</button>
+    <div style="margin-bottom:8px"><button class="btn btn-secondary btn-sm" onclick="aiSelectAllHosts()">全选</button><span style="font-size:13px;margin-left:12px">已选 <strong id="aiSelN" style="color:var(--accent)">0</strong> 台</span></div>
+    <div id="aiPickList"></div>
+    <div style="margin-top:16px;text-align:right"><button class="btn btn-primary" onclick="confirmAddAiHosts()">批量添加</button></div>
+  </div>
+</div></div></div>
 
-    <!-- 批量分配分组模态框 -->
-    <div class="modal" id="batchGroupModal">
-        <div class="modal-content" style="max-width: 500px;">
-            <div class="modal-header">
-                <h3>批量分配分组</h3>
-                <button class="modal-close" onclick="closeModal('batchGroupModal')">&times;</button>
-            </div>
-            <div class="modal-body">
-                <form id="batchGroupForm">
-                    <p style="margin-bottom:15px;color:#718096;">将 <strong id="batchGroupCount">0</strong> 个客户端分配到：</p>
-                    <div class="form-group"><label>选择分组</label><select id="batchGroupSelect" required></select></div>
-                    <button type="submit" class="btn btn-primary">确定</button>
-                </form>
-            </div>
-        </div>
-    </div>
+<div class="toast-container" id="toastBox"></div>
 
-    <!-- 一键采集结果模态框 -->
-    <div class="modal" id="collectResultModal">
-        <div class="modal-content" style="max-width: 600px;">
-            <div class="modal-header">
-                <h3>采集结果</h3>
-                <button class="modal-close" onclick="closeModal('collectResultModal')">&times;</button>
-            </div>
-            <div class="modal-body" id="collectResultBody"></div>
-        </div>
-    </div>
+<script>
+const API='';
+let selSet=new Set(), curAssignId=null, curDetailId=null, curGroupFilter=null, aiGrp=null, aiPicks=new Set();
 
-    <!-- 告警中心模态框 -->
-    <div class="modal" id="alertCenterModal">
-        <div class="modal-content modal-content-lg">
-            <div class="modal-header">
-                <h3>告警中心</h3>
-                <button class="modal-close" onclick="closeModal('alertCenterModal')">&times;</button>
-            </div>
-            <div class="modal-body">
-                <div class="tabs">
-                    <button class="tab active" onclick="switchAlertTab(this, 'tabUnresolved')">未解决告警</button>
-                    <button class="tab" onclick="switchAlertTab(this, 'tabResolved')">已解决告警</button>
-                </div>
-                <div class="tab-content active" id="tabUnresolved">
-                    <div style="margin-bottom:15px;text-align:right;">
-                        <button class="btn btn-success btn-small" onclick="batchResolveAlerts()">批量标记为已解决</button>
-                    </div>
-                    <div id="unresolvedAlertsList"><div class="loading">加载中...</div></div>
-                </div>
-                <div class="tab-content" id="tabResolved">
-                    <div id="resolvedAlertsList"><div class="loading">加载中...</div></div>
-                </div>
-            </div>
-        </div>
-    </div>
+// ===== Checkbox =====
+function syncCb(wrap){const inp=wrap.querySelector('.cb-input');if(inp){wrap.classList.toggle('checked',inp.checked);}}
+function initAllCbs(){document.querySelectorAll('.cb-wrap').forEach(w=>{const inp=w.querySelector('.cb-input');if(inp){w.classList.toggle('checked',inp.checked);inp.addEventListener('change',()=>syncCb(w));}});}
+function makeCb(id,checked,extra){
+  return `<span class="cb-wrap${checked?' checked':''}" onclick="var i=this.querySelector('.cb-input');i.checked=!i.checked;syncCb(this);${extra||''}"><span class="cb-mark"></span><input type="checkbox" class="cb-input" ${id?'id="'+id+'" ':''}${checked?'checked':''}></span>`;
+}
 
-    <!-- 邮件配置模态框 -->
-    <div class="modal" id="emailConfigModal">
-        <div class="modal-content" style="max-width: 700px;">
-            <div class="modal-header">
-                <h3>系统配置</h3>
-                <button class="modal-close" onclick="closeModal('emailConfigModal')">&times;</button>
-            </div>
-            <div class="modal-body">
-                <div class="tabs">
-                    <button class="tab active" onclick="switchConfigTab(this, 'tabEmailConfig')">邮件配置</button>
-                    <button class="tab" onclick="switchConfigTab(this, 'tabAlertSettings')">告警设置</button>
-                </div>
-                
-                <!-- 邮件配置 Tab -->
-                <div class="tab-content active" id="tabEmailConfig">
-                    <form id="emailConfigForm" class="email-config-form">
-                        <div class="form-group">
-                            <label>SMTP服务器</label>
-                            <input type="text" id="smtpHost" placeholder="smtp.qq.com" required>
-                            <div class="hint">例如: smtp.qq.com (QQ邮箱), smtp.163.com (163邮箱)</div>
-                        </div>
-                        <div class="form-group">
-                            <label>SMTP端口</label>
-                            <input type="number" id="smtpPort" value="465" required>
-                            <div class="hint">SSL端口通常为465</div>
-                        </div>
-                        <div class="form-group">
-                            <label>发件人邮箱</label>
-                            <input type="email" id="smtpUser" placeholder="your@email.com" required>
-                        </div>
-                        <div class="form-group">
-                            <label>授权码/密码</label>
-                            <input type="password" id="smtpPassword" placeholder="请输入授权码或密码" required>
-                            <div class="hint">QQ邮箱/163邮箱需使用授权码，非登录密码</div>
-                        </div>
-                        <div class="form-group">
-                            <label>发件人名称</label>
-                            <input type="text" id="senderName" value="硬件监控系统">
-                        </div>
-                        <div class="form-group">
-                            <label>收件人列表（多个用逗号分隔）</label>
-                            <textarea id="recipients" placeholder="admin1@example.com, admin2@example.com" required></textarea>
-                        </div>
-                        <div class="form-group">
-                            <label>
-                                <input type="checkbox" id="emailEnabled"> 启用邮件告警
-                            </label>
-                        </div>
-                        <div style="display:flex;gap:10px;">
-                            <button type="submit" class="btn btn-primary">保存配置</button>
-                            <button type="button" class="btn btn-secondary" onclick="testEmailConfig()">发送测试邮件</button>
-                        </div>
-                    </form>
-                </div>
+// ===== API helpers =====
+async function api(path,opt){try{const r=await fetch(API+path,opt);if(r.status===401){showMain(false);return null;}return await r.json();}catch(e){console.error(e);return null;}}
+function showMain(on){document.getElementById('loginPage').style.display=on?'none':'flex';document.getElementById('mainApp').classList.toggle('active',on);}
+function parseDt(s){
+  if(!s)return null;
+  let t=String(s);
+  // Try ISO format: 2026-07-10T18:27:44
+  const iso=t.match(/(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
+  if(iso)return new Date(iso[1],iso[2]-1,iso[3],iso[4],iso[5],iso[6]);
+  // Try GMT format: Fri, 10 Jul 2026 18:27:44 GMT (strip GMT to avoid UTC shift)
+  t=t.replace(/\s*GMT\s*$/,'');
+  t=t.replace(/\s*UTC\s*$/,'');
+  const gmt=t.match(/(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2}):(\d{2})/);
+  if(gmt)return new Date(gmt[1],gmt[2]-1,gmt[3],gmt[4],gmt[5],gmt[6]);
+  // Try MySQL format: 2026-07-10 18:27:44
+  const mysql=t.match(/(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2}):(\d{2})/);
+  if(mysql)return new Date(mysql[1],mysql[2]-1,mysql[3],mysql[4],mysql[5],mysql[6]);
+  return new Date(t);
+}
+function fmtDt(s){const d=parseDt(s);return d?`${d.getFullYear()}/${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}`:'-';}
 
-                <!-- 告警设置 Tab -->
-                <div class="tab-content" id="tabAlertSettings">
-                    <form id="alertSettingsForm">
-                        <!-- 总开关区域 -->
-                        <div style="background:#f7fafc;padding:20px;border-radius:10px;margin-bottom:20px;">
-                            <h4 style="margin-top:0;margin-bottom:15px;color:#2d3748;">⚙️ 功能开关</h4>
-                            <div style="display:grid;grid-template-columns:repeat(2, 1fr);gap:15px;">
-                                <label style="display:flex;align-items:center;padding:15px;background:white;border:2px solid #e2e8f0;border-radius:8px;cursor:pointer;transition:all 0.3s;" onmouseover="this.style.borderColor='#667eea'" onmouseout="this.style.borderColor='#e2e8f0'">
-                                    <input type="checkbox" id="alertEnabled" style="margin-right:12px;width:20px;height:20px;">
-                                    <div>
-                                        <div style="font-weight:600;font-size:15px;">🔔 告警记录</div>
-                                        <div style="font-size:13px;color:#718096;margin-top:4px;">开启后，硬件变更会记录到告警列表</div>
-                                    </div>
-                                </label>
-                                <label style="display:flex;align-items:center;padding:15px;background:white;border:2px solid #e2e8f0;border-radius:8px;cursor:pointer;transition:all 0.3s;" onmouseover="this.style.borderColor='#667eea'" onmouseout="this.style.borderColor='#e2e8f0'">
-                                    <input type="checkbox" id="emailEnabled" style="margin-right:12px;width:20px;height:20px;">
-                                    <div>
-                                        <div style="font-weight:600;font-size:15px;">📧 邮件通知</div>
-                                        <div style="font-size:13px;color:#718096;margin-top:4px;">开启后，硬件变更会发送邮件（需先配置邮件）</div>
-                                    </div>
-                                </label>
-                            </div>
-                        </div>
+// ===== Login =====
+document.getElementById('loginForm').addEventListener('submit',async e=>{
+  e.preventDefault();
+  const r=await api('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:document.getElementById('loginUser').value,password:document.getElementById('loginPass').value})});
+  if(r?.status==='success'){showMain(true);loadAll();toast('success','登录成功');}else toast('error',r?.message||'登录失败');
+});
+async function doLogout(){await api('/api/logout',{method:'POST'});showMain(false);}
+async function checkLogin(){const r=await api('/api/check-login');if(r?.logged_in){showMain(true);document.getElementById('sidebarUser').textContent=r.username;loadAll();}}
 
-                        <p style="margin-bottom:15px;color:#718096;">选择需要监控变更的硬件类型（勾选后，当该硬件发生变化时会触发告警）：</p>
-                        <div style="display:grid;grid-template-columns:repeat(2, 1fr);gap:15px;margin-bottom:20px;">
-                            <label style="display:flex;align-items:center;padding:12px;border:1px solid #e2e8f0;border-radius:8px;cursor:pointer;transition:all 0.3s;" onmouseover="this.style.background='#f7fafc'" onmouseout="this.style.background='white'">
-                                <input type="checkbox" id="monitorCpu" style="margin-right:10px;width:18px;height:18px;">
-                                <div>
-                                    <div style="font-weight:600;">CPU</div>
-                                    <div style="font-size:12px;color:#718096;">监控CPU型号变化</div>
-                                </div>
-                            </label>
-                            <label style="display:flex;align-items:center;padding:12px;border:1px solid #e2e8f0;border-radius:8px;cursor:pointer;transition:all 0.3s;" onmouseover="this.style.background='#f7fafc'" onmouseout="this.style.background='white'">
-                                <input type="checkbox" id="monitorGpu" style="margin-right:10px;width:18px;height:18px;">
-                                <div>
-                                    <div style="font-weight:600;">GPU</div>
-                                    <div style="font-size:12px;color:#718096;">监控显卡型号变化</div>
-                                </div>
-                            </label>
-                            <label style="display:flex;align-items:center;padding:12px;border:1px solid #e2e8f0;border-radius:8px;cursor:pointer;transition:all 0.3s;" onmouseover="this.style.background='#f7fafc'" onmouseout="this.style.background='white'">
-                                <input type="checkbox" id="monitorMemory" style="margin-right:10px;width:18px;height:18px;">
-                                <div>
-                                    <div style="font-weight:600;">内存</div>
-                                    <div style="font-size:12px;color:#718096;">监控内存容量变化</div>
-                                </div>
-                            </label>
-                            <label style="display:flex;align-items:center;padding:12px;border:1px solid #e2e8f0;border-radius:8px;cursor:pointer;transition:all 0.3s;" onmouseover="this.style.background='#f7fafc'" onmouseout="this.style.background='white'">
-                                <input type="checkbox" id="monitorDisk" style="margin-right:10px;width:18px;height:18px;">
-                                <div>
-                                    <div style="font-weight:600;">硬盘</div>
-                                    <div style="font-size:12px;color:#718096;">监控硬盘数量、型号和容量变化</div>
-                                </div>
-                            </label>
-                            <label style="display:flex;align-items:center;padding:12px;border:1px solid #e2e8f0;border-radius:8px;cursor:pointer;transition:all 0.3s;" onmouseover="this.style.background='#f7fafc'" onmouseout="this.style.background='white'">
-                                <input type="checkbox" id="monitorNetwork" style="margin-right:10px;width:18px;height:18px;">
-                                <div>
-                                    <div style="font-weight:600;">网卡</div>
-                                    <div style="font-size:12px;color:#718096;">监控网卡数量和描述变化</div>
-                                </div>
-                            </label>
-                            <label style="display:flex;align-items:center;padding:12px;border:1px solid #e2e8f0;border-radius:8px;cursor:pointer;transition:all 0.3s;" onmouseover="this.style.background='#f7fafc'" onmouseout="this.style.background='white'">
-                                <input type="checkbox" id="monitorMotherboard" style="margin-right:10px;width:18px;height:18px;">
-                                <div>
-                                    <div style="font-weight:600;">主板</div>
-                                    <div style="font-size:12px;color:#718096;">监控主板制造商和型号变化</div>
-                                </div>
-                            </label>
-                            <label style="display:flex;align-items:center;padding:12px;border:1px solid #e2e8f0;border-radius:8px;cursor:pointer;transition:all 0.3s;" onmouseover="this.style.background='#f7fafc'" onmouseout="this.style.background='white'">
-                                <input type="checkbox" id="monitorBios" style="margin-right:10px;width:18px;height:18px;">
-                                <div>
-                                    <div style="font-weight:600;">BIOS</div>
-                                    <div style="font-size:12px;color:#718096;">监控BIOS制造商和版本变化</div>
-                                </div>
-                            </label>
-                        </div>
-                        <div style="display:flex;gap:10px;">
-                            <button type="submit" class="btn btn-primary">保存设置</button>
-                            <button type="button" class="btn btn-secondary" onclick="resetAlertSettings()">恢复默认</button>
-                        </div>
-                    </form>
-                </div>
-            </div>
-        </div>
-    </div>
+// ===== Page switch =====
+const titles={dashboard:['仪表盘','实时监控'],clients:['客户端管理','查看和管理所有客户端'],alerts:['告警中心','硬件变更告警'],probe:['主机探测','端口和服务可用性监控'],ai:['AI 研判中心','AI 智能分析'],config:['系统配置','邮件、告警规则']};
+function switchPage(id,el){
+  document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
+  if(el)el.classList.add('active');else document.querySelector(`[data-page="${id}"]`)?.classList.add('active');
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  document.getElementById('page-'+id)?.classList.add('active');
+  const t=titles[id];if(t){document.getElementById('topTitle').textContent=t[0];document.getElementById('topSub').textContent=t[1];}
+  document.getElementById('topActions').style.display=(id==='dashboard'||id==='clients')?'flex':'none';
+  // 切换页面时刷新数据
+  if(id==='dashboard'){loadDashboard();refreshNavBadges();}
+  if(id==='clients')loadClients();
+  if(id==='alerts')loadAlerts();
+  if(id==='probe'){loadProbeTargets();loadProbeAlerts();}
+  if(id==='ai'){loadAiAlerts();loadAiHosts();loadAiConfig();}
+  if(id==='config'){loadEmailCfg();loadAlertCfg();}
+}
+function switchTab(el,grp,cid){el.parentElement.querySelectorAll('.tab-item').forEach(t=>t.classList.remove('active'));el.classList.add('active');el.closest('.modal').querySelectorAll('.tab-content').forEach(c=>c.classList.remove('active'));document.getElementById(cid).classList.add('active');}
+function switchITab(el,grp,cid){el.parentElement.querySelectorAll('.inner-tab').forEach(t=>t.classList.remove('active'));el.classList.add('active');el.closest('.page').querySelectorAll(':scope > .tab-content').forEach(c=>c.classList.remove('active'));document.getElementById(cid).classList.add('active');}
 
-    <script>
-        const API_BASE = '';
-        let selectedClients = new Set();
+// ===== Toast =====
+function toast(type,msg){const c=document.getElementById('toastBox'),icons={success:'fa-check-circle',error:'fa-times-circle',warning:'fa-exclamation-triangle',info:'fa-info-circle'};const t=document.createElement('div');t.className='toast '+type;const span=document.createElement('span');span.textContent=msg;t.appendChild(span);c.appendChild(t);setTimeout(()=>{t.remove();},3000);}
+function closeM(id){document.getElementById(id).classList.remove('active');}
+document.querySelectorAll('.modal-overlay').forEach(o=>{o.addEventListener('click',function(e){if(e.target===this)this.classList.remove('active');});});
+document.addEventListener('keydown',e=>{if(e.key==='Escape')document.querySelectorAll('.modal-overlay.active').forEach(m=>m.classList.remove('active'));});
 
-        // ===== 分组加载 =====
-        let currentGroupId = '';  // 当前选中的分组ID
+// ===== Load All =====
+async function loadAll(){await Promise.all([loadDashboard(),loadGroups(),loadClients()]);}
+async function loadDashboard(){
+  const r=await api('/api/dashboard');if(r?.status!=='success')return;
+  const d=r.data;
+  document.getElementById('dsTotal').textContent=d.total_clients;
+  document.getElementById('dsGroups').textContent=d.total_groups;
+  document.getElementById('dsOnline').textContent=d.online_clients;
+  document.getElementById('dsAlerts').textContent=d.unresolved_alerts;
+  document.getElementById('navClientCount').textContent=d.total_clients;
+  document.getElementById('navAlertCount').textContent=d.unresolved_alerts;
+}
 
-        async function loadGroups() {
-            try {
-                const response = await fetch(`${API_BASE}/api/groups`);
-                const result = await response.json();
-                if (result.status === 'success') {
-                    const groups = result.data;
-                    document.getElementById('totalGroups').textContent = groups.length;
-                    
-                    // 渲染左侧分组栏
-                    renderSidebarGroups(groups);
-                    
-                    // 保留原有的下拉框逻辑（用于批量分配等）
-                    const assignSelect = document.getElementById('assignGroupSelect');
-                    assignSelect.innerHTML = '<option value="">-- 请选择分组 --</option>';
-                    groups.forEach(g => {
-                        assignSelect.innerHTML += `<option value="${g.id}">${g.name}</option>`;
-                    });
-                    const batchSelect = document.getElementById('batchGroupSelect');
-                    batchSelect.innerHTML = '<option value="">-- 请选择分组 --</option>';
-                    groups.forEach(g => {
-                        batchSelect.innerHTML += `<option value="${g.id}">${g.name}</option>`;
-                    });
-                }
-            } catch (error) { console.error('加载分组失败:', error); }
+// ===== Groups =====
+let groupsData=[];
+async function loadGroups(){
+  const r=await api('/api/groups');if(r?.status!=='success')return;
+  groupsData=r.data;
+  const c=document.getElementById('sidebarGroups');
+  const total=groupsData.reduce((s,g)=>s+g.client_count,0);
+  let h=`<div class="group-item ${curGroupFilter===null?'active':''}" onclick="filterGroup(null,this)"><span class="dot" style="background:var(--accent)"></span> 全部<span class="count">${total}</span></div>`;
+  groupsData.forEach(g=>{h+=`<div class="group-item ${curGroupFilter===g.id?'active':''}" onclick="filterGroup(${g.id},this)"><span class="dot" style="background:var(--accent)"></span> ${g.name}<span class="count">${g.client_count}</span></div>`;});
+  c.innerHTML=h;
+  // populate assign select
+  const sel=document.getElementById('assignSel');if(sel)sel.innerHTML=groupsData.map(g=>`<option value="${g.id}">${g.name}</option>`).join('');
+}
+function filterGroup(gid,el){curGroupFilter=gid;loadGroups();switchPage('clients',document.querySelector('[data-page=clients]'));}
+
+// ===== Clients =====
+let clientsData=[];
+let curSortField='last_report';
+let curSortOrder='desc';
+
+async function loadClients(){
+  let url=`/api/clients?sort_by=${curSortField}&order=${curSortOrder}`;
+  if(curGroupFilter!==null)url+=`&group_id=${curGroupFilter}`;
+  const r=await api(url);if(r?.status!=='success')return;
+  clientsData=r.data;
+  const now=new Date(),tbody=document.getElementById('clientTbody');
+  if(!clientsData.length){tbody.innerHTML='<tr><td colspan="8" style="text-align:center;padding:40px;color:var(--text-muted)">暂无数据</td></tr>';document.getElementById('tblInfo').textContent='共 0 条';return;}
+  // 更新列标题排序样式
+  ['hostname','local_ip','group_name','online','last_report'].forEach(field=>{
+    const th=document.getElementById('th-'+field);
+    if(th){
+      th.classList.toggle('sort-active',curSortField===field);
+      const ascIcon=th.querySelector('.sort-asc');
+      const descIcon=th.querySelector('.sort-desc');
+      if(ascIcon&&descIcon){
+        if(curSortField===field){
+          ascIcon.style.opacity=curSortOrder==='asc'?'1':'0.3';
+          descIcon.style.opacity=curSortOrder==='desc'?'1':'0.3';
+        }else{
+          ascIcon.style.opacity='0.5';
+          descIcon.style.opacity='0.5';
         }
-
-        // 渲染左侧分组栏
-        function renderSidebarGroups(groups) {
-            const sidebarList = document.getElementById('sidebarGroupList');
-            
-            // 计算总客户端数
-            const totalClients = groups.reduce((sum, g) => sum + g.client_count, 0);
-            
-            let html = '';
-            // 全部客户端选项
-            html += `
-                <li class="group-item ${currentGroupId === '' ? 'active' : ''}" onclick="selectGroup('')">
-                    <span>📊 全部客户端</span>
-                    <span class="count">${totalClients}</span>
-                </li>
-            `;
-            
-            // 未分组选项
-            html += `
-                <li class="group-item ${currentGroupId === 'ungrouped' ? 'active' : ''}" onclick="selectGroup('ungrouped')">
-                    <span>📁 未分组</span>
-                    <span class="count">0</span>
-                </li>
-            `;
-            
-            // 各个分组
-            groups.forEach(g => {
-                html += `
-                    <li class="group-item ${currentGroupId == g.id ? 'active' : ''}" onclick="selectGroup(${g.id})">
-                        <span>${g.name}</span>
-                        <span class="count">${g.client_count}</span>
-                    </li>
-                `;
-            });
-            
-            sidebarList.innerHTML = html;
-        }
-
-        // 选择分组
-        function selectGroup(groupId) {
-            currentGroupId = groupId;
-            loadGroups();  // 重新渲染以更新选中状态
-            loadClients();  // 加载对应分组的客户端
-        }
-
-        // ===== 客户端加载（带复选框和排序） =====
-        let currentSortBy = 'last_report';
-        let currentOrder = 'desc';
-
-        async function loadClients() {
-            try {
-                const groupId = currentGroupId;  // 使用左侧分组栏选中的分组ID
-                const url = `${API_BASE}/api/clients?group_id=${groupId}&sort_by=${currentSortBy}&order=${currentOrder}`;
-                const response = await fetch(url);
-                const result = await response.json();
-                if (result.status === 'success') {
-                    const clients = result.data;
-                    document.getElementById('totalClients').textContent = clients.length;
-                    const now = new Date();
-                    const onlineCount = clients.filter(c => {
-                        const diff = (now - new Date(c.last_report)) / (1000*60*60);
-                        return diff < 24;
-                    }).length;
-                    document.getElementById('onlineClients').textContent = onlineCount;
-
-                    const tbody = document.getElementById('clientTableBody');
-                    if (clients.length === 0) {
-                        tbody.innerHTML = '<tr><td colspan="9" class="empty-state"><p>暂无客户端数据</p></td></tr>';
-                        selectedClients.clear();
-                        updateBatchToolbar();
-                        return;
-                    }
-
-                    // 更新“未分组”计数
-                    updateUngroupedCount(clients, groupId);
-
-                    tbody.innerHTML = clients.map(c => {
-                        const lastReport = new Date(c.last_report);
-                        const diffHours = (now - lastReport) / (1000*60*60);
-                        const isOnline = diffHours < 24;
-                        const checked = selectedClients.has(c.client_id) ? 'checked' : '';
-                        const safeId = c.client_id.replace(/[^a-zA-Z0-9]/g,'_');
-                        return `<tr class="${checked ? 'selected' : ''}" data-client-id="${c.client_id}">
-                            <td><input type="checkbox" class="client-cb" data-id="${c.client_id}" ${checked} onchange="toggleSelect('${c.client_id}', this.checked, this.closest('tr'))"></td>
-                            <td><strong>${c.hostname || c.client_id}</strong></td>
-                            <td><span class="ip-badge">${c.local_ip || '-'}</span></td>
-                            <td>${c.group_name || '未分组'}</td>
-                            <td id="hwStatus_${safeId}"><span class="hw-status-unknown">检测中...</span></td>
-                            <td id="reportType_${safeId}">-</td>
-                            <td>${formatDateTime(c.last_report)}</td>
-                            <td class="${isOnline ? 'status-online' : 'status-offline'}">${isOnline ? '在线' : '离线'}</td>
-                            <td class="action-btns">
-                                <button class="btn btn-warning btn-small" onclick="collectOne('${c.client_id}')" title="主动采集">采集</button>
-                                <button class="btn btn-primary btn-small" onclick="viewDetail('${c.client_id}')">详情</button>
-                                <button class="btn btn-secondary btn-small" onclick="showAssignGroupModal('${c.client_id}')">分组</button>
-                                <button class="btn btn-danger btn-small" onclick="deleteClient('${c.client_id}')">删除</button>
-                            </td>
-                        </tr>`;
-                    }).join('');
-
-                    // 异步加载每个客户端的硬件状态
-                    clients.forEach(c => loadClientHwStatus(c.client_id));
-
-                    // 更新全选框状态
-                    updateSelectAllState();
-                    updateBatchToolbar();
-                }
-            } catch (error) { console.error('加载客户端失败:', error); }
-        }
-
-        // ===== 加载客户端硬件状态 =====
-        async function loadClientHwStatus(clientId) {
-            try {
-                const response = await fetch(`${API_BASE}/api/client/${clientId}/baseline`);
-                const result = await response.json();
-                const safeId = clientId.replace(/[^a-zA-Z0-9]/g,'_');
-                const el = document.getElementById(`hwStatus_${safeId}`);
-                if (!el) return;
-
-                if (result.status === 'not_found') {
-                    el.innerHTML = '<span class="hw-status-unknown">无基准</span>';
-                } else if (result.status === 'success') {
-                    // 检查是否有未解决的告警
-                    const alertResp = await fetch(`${API_BASE}/api/client/${clientId}/alerts?resolved=false`);
-                    const alertResult = await alertResp.json();
-                    if (alertResult.status === 'success' && alertResult.data.length > 0) {
-                        el.innerHTML = `<span class="hw-status-changed" title="有${alertResult.data.length}个未解决告警">⚠ 已变更</span>`;
-                    } else {
-                        el.innerHTML = '<span class="hw-status-normal">✓ 正常</span>';
-                    }
-                }
-            } catch (error) {
-                console.error(`加载客户端 ${clientId} 硬件状态失败:`, error);
-            }
-        }
-
-        // ===== 选择相关 =====
-        function toggleSelect(clientId, checked, tr) {
-            if (checked) {
-                selectedClients.add(clientId);
-                if (tr) tr.classList.add('selected');
-            } else {
-                selectedClients.delete(clientId);
-                if (tr) tr.classList.remove('selected');
-            }
-            updateSelectAllState();
-            updateBatchToolbar();
-        }
-
-        function toggleSelectAll(checked) {
-            document.querySelectorAll('.client-cb').forEach(cb => {
-                cb.checked = checked;
-                const tr = cb.closest('tr');
-                if (tr) {
-                    if (checked) { tr.classList.add('selected'); selectedClients.add(cb.dataset.id); }
-                    else { tr.classList.remove('selected'); selectedClients.delete(cb.dataset.id); }
-                }
-            });
-            updateBatchToolbar();
-        }
-
-        function updateSelectAllState() {
-            const allCbs = document.querySelectorAll('.client-cb');
-            const allChecked = allCbs.length > 0 && Array.from(allCbs).every(cb => cb.checked);
-            document.getElementById('selectAll').checked = allChecked;
-        }
-
-        function updateBatchToolbar() {
-            const toolbar = document.getElementById('batchToolbar');
-            const count = selectedClients.size;
-            document.getElementById('selectedCount').textContent = count;
-            if (count > 0) {
-                toolbar.classList.add('active');
-            } else {
-                toolbar.classList.remove('active');
-            }
-        }
-
-        function clearSelection() {
-            selectedClients.clear();
-            document.querySelectorAll('.client-cb').forEach(cb => { cb.checked = false; cb.closest('tr')?.classList.remove('selected'); });
-            document.getElementById('selectAll').checked = false;
-            updateBatchToolbar();
-        }
-
-        // ===== Tab 切换 =====
-        function switchTab(btn, tabId) {
-            btn.closest('.modal-body').querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-            btn.classList.add('active');
-            btn.closest('.modal-body').querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-            document.getElementById(tabId).classList.add('active');
-        }
-
-        // 系统配置 Tab 切换
-        function switchConfigTab(btn, tabId) {
-            btn.closest('.modal-body').querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-            btn.classList.add('active');
-            btn.closest('.modal-body').querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-            document.getElementById(tabId).classList.add('active');
-        }
-
-        // ===== 排序功能 =====
-        function sortBy(field) {
-            if (currentSortBy === field) {
-                // 如果点击同一列，切换排序方向
-                currentOrder = currentOrder === 'asc' ? 'desc' : 'asc';
-            } else {
-                // 否则按新字段排序，默认降序
-                currentSortBy = field;
-                currentOrder = 'desc';
-            }
-            
-            // 更新表头指示器
-            updateSortIndicators();
-            
-            // 重新加载数据
-            loadClients();
-        }
-
-        function updateSortIndicators() {
-            // 清除所有指示器
-            ['hostname', 'local_ip', 'group_name', 'last_report'].forEach(f => {
-                const el = document.getElementById(`sort_${f}`);
-                if (el) el.textContent = '';
-            });
-            
-            // 设置当前排序字段的指示器
-            const indicator = document.getElementById(`sort_${currentSortBy}`);
-            if (indicator) {
-                indicator.textContent = currentOrder === 'asc' ? '↑' : '↓';
-            }
-        }
-
-        // ===== 更新未分组计数 =====
-        async function updateUngroupedCount(currentClients, currentGroupId) {
-            try {
-                // 获取所有客户端以计算未分组数量
-                const response = await fetch(`${API_BASE}/api/clients`);
-                const result = await response.json();
-                if (result.status === 'success') {
-                    const ungroupedCount = result.data.filter(c => !c.group_id || c.group_id === null).length;
-                    
-                    // 更新“未分组”选项的文本
-                    const filterSelect = document.getElementById('groupFilter');
-                    const ungroupedOption = Array.from(filterSelect.options).find(opt => opt.value === 'ungrouped');
-                    if (ungroupedOption) {
-                        ungroupedOption.textContent = `未分组 (${ungroupedCount})`;
-                        
-                        // 如果当前选中的是“未分组”，更新选中状态的文本
-                        if (currentGroupId === 'ungrouped') {
-                            ungroupedOption.selected = true;
-                        }
-                    }
-                }
-            } catch (error) {
-                console.error('更新未分组计数失败:', error);
-            }
-        }
-
-        // ===== 采集 =====
-        async function collectOne(clientId) {
-            showToast(`正在向 ${clientId} 发送采集请求...`, 'info');
-            try {
-                const response = await fetch(`${API_BASE}/api/collect/${clientId}`, {
-                    method: 'POST', headers: {'Content-Type': 'application/json'}
-                });
-                const result = await response.json();
-                if (result.status === 'success') {
-                    showToast(`已向 ${clientId} 发送采集请求`, 'success');
-                } else {
-                    showToast(`采集失败: ${result.message}`, 'error');
-                }
-            } catch (error) { showToast('采集请求失败', 'error'); }
-        }
-
-        async function collectAll() {
-            const btn = document.getElementById('btnCollectAll');
-            btn.disabled = true; btn.textContent = '采集中...';
-            document.getElementById('collectResultBody').innerHTML = '<div class="collect-result"><div class="loading">正在向所有客户端发送采集请求...</div></div>';
-            document.getElementById('collectResultModal').classList.add('active');
-            try {
-                const response = await fetch(`${API_BASE}/api/collect/all`, {
-                    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({})
-                });
-                const result = await response.json();
-                let html = `<div class="collect-result">`;
-                html += `<p style="margin-bottom:10px;font-weight:bold;">总计: ${result.total} | 成功: ${result.success} | 失败: ${result.failed} | 耗时: ${result.elapsed_seconds || 0}秒 | 并发: ${result.concurrency || 50}</p>`;
-                result.results.forEach(r => {
-                    const cls = r.status === 'success' ? 'collect-success' : 'collect-failed';
-                    const icon = r.status === 'success' ? '✓' : '✗';
-                    html += `<div class="collect-result-item ${cls}"><span>${icon} ${r.client_id}</span><span style="color:${r.status === 'success' ? '#48bb78' : '#f56565'}">${r.message}</span></div>`;
-                });
-                html += '</div>';
-                document.getElementById('collectResultBody').innerHTML = html;
-                showToast(`采集完成: ${result.success}成功 / ${result.failed}失败`, result.failed === 0 ? 'success' : 'error');
-                setTimeout(() => loadClients(), 2000);
-            } catch (error) {
-                document.getElementById('collectResultBody').innerHTML = '<div class="collect-result"><p class="collect-failed">采集请求失败</p></div>';
-            }
-            btn.disabled = false; btn.textContent = '一键采集';
-        }
-
-        // ===== 批量采集 =====
-        async function batchCollect() {
-            const ids = Array.from(selectedClients);
-            if (ids.length === 0) { showToast('请先选择客户端', 'error'); return; }
-
-            document.getElementById('collectResultBody').innerHTML = `<div class="collect-result"><div class="loading">正在向 ${ids.length} 个客户端发送采集请求...</div></div>`;
-            document.getElementById('collectResultModal').classList.add('active');
-
-            try {
-                const response = await fetch(`${API_BASE}/api/collect/all`, {
-                    method: 'POST', headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({})
-                });
-                const result = await response.json();
-                // 过滤出选中客户端的结果
-                const filteredResults = result.results.filter(r => selectedClients.has(r.client_id));
-                let html = `<div class="collect-result">`;
-                html += `<p style="margin-bottom:10px;font-weight:bold;">总计: ${ids.length} | 成功: ${filteredResults.filter(r=>r.status==='success').length} | 失败: ${filteredResults.filter(r=>r.status!=='success').length}</p>`;
-                filteredResults.forEach(r => {
-                    const cls = r.status === 'success' ? 'collect-success' : 'collect-failed';
-                    const icon = r.status === 'success' ? '✓' : '✗';
-                    html += `<div class="collect-result-item ${cls}"><span>${icon} ${r.client_id}</span><span style="color:${r.status === 'success' ? '#48bb78' : '#f56565'}">${r.message}</span></div>`;
-                });
-                html += '</div>';
-                document.getElementById('collectResultBody').innerHTML = html;
-                showToast(`批量采集完成`, 'success');
-                setTimeout(() => loadClients(), 2000);
-            } catch (error) {
-                document.getElementById('collectResultBody').innerHTML = '<div class="collect-result"><p class="collect-failed">采集请求失败</p></div>';
-            }
-        }
-
-        // ===== 查看详情 =====
-        async function viewDetail(clientId) {
-            try {
-                const response = await fetch(`${API_BASE}/api/client/${clientId}`);
-                const result = await response.json();
-                if (result.status === 'success') {
-                    const data = result.data;
-                    const hardware = data.latest_hardware;
-                    document.getElementById('modalTitle').textContent = `硬件详情 - ${data.hostname || data.client_id}`;
-
-                    // 硬件信息 Tab
-                    let html = '<div class="hardware-info">';
-                    html += `<p><span class="label">客户端ID:</span> ${data.client_id}</p>`;
-                    html += `<p><span class="label">IP地址:</span> ${data.local_ip || '-'}</p>`;
-                    html += `<p><span class="label">分组:</span> ${data.group_name || '未分组'}</p>`;
-                    if (hardware && hardware.system) {
-                        html += '<h4>系统信息</h4>';
-                        html += `<p><span class="label">主机名:</span> ${hardware.system.hostname}</p>`;
-                        html += `<p><span class="label">操作系统:</span> ${hardware.system.os_name}</p>`;
-                        html += `<p><span class="label">版本:</span> ${hardware.system.os_version}</p>`;
-                        html += `<p><span class="label">架构:</span> ${hardware.system.os_architecture}</p>`;
-                    }
-                    if (hardware && hardware.cpu && Array.isArray(hardware.cpu)) {
-                        html += '<h4>CPU信息</h4>';
-                        hardware.cpu.forEach((cpu, i) => {
-                            html += `<p><span class="label">CPU ${i+1}:</span> ${cpu.name} | ${cpu.cores}核${cpu.threads}线程 | ${cpu.max_clock_speed}MHz</p>`;
-                        });
-                    }
-                    if (hardware && hardware.memory) {
-                        html += '<h4>内存信息</h4>';
-                        if (hardware.memory.total_capacity) {
-                            html += `<p><span class="label">总容量:</span> ${(hardware.memory.total_capacity/(1024**3)).toFixed(2)} GB</p>`;
-                        }
-                        if (hardware.memory.modules) {
-                            hardware.memory.modules.forEach((m, i) => {
-                                html += `<p><span class="label">内存条${i+1}:</span> ${(m.capacity/(1024**3)).toFixed(2)}GB ${m.speed||''}MHz ${m.manufacturer||''}</p>`;
-                            });
-                        }
-                    }
-                    if (hardware && hardware.disk && Array.isArray(hardware.disk)) {
-                        html += '<h4>硬盘信息</h4>';
-                        hardware.disk.forEach((d, i) => {
-                            html += `<p><span class="label">硬盘${i+1}:</span> ${d.model} (${(d.size/(1024**3)).toFixed(1)}GB) ${d.serial_number || ''}</p>`;
-                        });
-                    }
-                    if (hardware && hardware.gpu && Array.isArray(hardware.gpu)) {
-                        html += '<h4>显卡信息</h4>';
-                        hardware.gpu.forEach((g, i) => {
-                            html += `<p><span class="label">显卡${i+1}:</span> ${g.name} ${g.adapter_ram ? ((g.adapter_ram/(1024**3)).toFixed(1)+'GB显存') : ''}</p>`;
-                        });
-                    }
-                    if (hardware && hardware.network && Array.isArray(hardware.network)) {
-                        html += '<h4>网络信息</h4>';
-                        hardware.network.forEach((n, i) => {
-                            html += `<p><span class="label">网卡${i+1}:</span> ${n.description||''}</p>`;
-                            html += `<p><span class="label">MAC:</span> ${n.mac_address} | <span class="label">IP:</span> ${(n.ip_addresses||[]).join(', ')}</p>`;
-                        });
-                    }
-                    if (hardware && hardware.motherboard) {
-                        html += '<h4>主板信息</h4>';
-                        html += `<p><span class="label">制造商:</span> ${hardware.motherboard.manufacturer||'-'} | <span class="label">型号:</span> ${hardware.motherboard.product||'-'} | <span class="label">序列号:</span> ${hardware.motherboard.serial_number||'-'}</p>`;
-                    }
-                    if (hardware && hardware.bios) {
-                        html += '<h4>BIOS信息</h4>';
-                        html += `<p><span class="label">制造商:</span> ${hardware.bios.manufacturer||'-'} | <span class="label">版本:</span> ${hardware.bios.version||'-'}</p>`;
-                    }
-                    html += '</div>';
-                    document.getElementById('tabHardware').innerHTML = html;
-
-                    // 重置到硬件信息 Tab
-                    document.querySelectorAll('#detailModal .tab').forEach((t, i) => t.classList.toggle('active', i === 0));
-                    document.getElementById('tabHardware').classList.add('active');
-                    document.getElementById('tabHistory').classList.remove('active');
-                    document.getElementById('tabAlerts').classList.remove('active');
-
-                    // 保存当前客户端ID供其他函数使用
-                    window.currentDetailClientId = clientId;
-
-                    // 加载历史记录 Tab
-                    loadHistory(clientId);
-                    // 加载告警记录 Tab
-                    loadClientAlerts(clientId);
-
-                    document.getElementById('detailModal').classList.add('active');
-                }
-            } catch (error) { console.error('获取详情失败:', error); alert('获取详情失败'); }
-        }
-
-        // ===== 设为基准 =====
-        async function setBaselineForCurrentClient() {
-            const clientId = window.currentDetailClientId;
-            if (!clientId) { showToast('请先打开客户端详情', 'error'); return; }
-            if (!confirm('确定将当前数据设为该客户端的硬件基准？这将覆盖之前的基准。')) return;
-
-            try {
-                const res = await fetch(`${API_BASE}/api/client/${clientId}/baseline`, {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'}
-                });
-                const r = await res.json();
-                if (r.status === 'success') {
-                    showToast('基准设置成功', 'success');
-                    loadClientHwStatus(clientId); // 刷新列表中的状态
-                    loadClientAlerts(clientId); // 刷新告警记录
-                } else alert(r.error);
-            } catch(e) { alert('设置基准失败'); }
-        }
-
-        // ===== 历史记录 =====
-        async function loadHistory(clientId) {
-            const container = document.getElementById('tabHistory');
-            container.innerHTML = '<div class="loading">加载历史记录...</div>';
-            try {
-                const response = await fetch(`${API_BASE}/api/client/${clientId}/history`);
-                const result = await response.json();
-                if (result.status === 'success' && result.data.length > 0) {
-                    let html = `<p style="margin-bottom:10px;color:#718096;">最近 ${result.data.length} 条采集记录</p>`;
-                    html += `<table class="history-table"><thead><tr><th>采集时间</th><th>CPU</th><th>内存</th><th>硬盘</th><th>显卡</th></tr></thead><tbody>`;
-                    result.data.forEach(h => {
-                        const cpuInfo = h.cpu_info ? JSON.parse(h.cpu_info) : [];
-                        const memInfo = h.memory_info ? JSON.parse(h.memory_info) : {};
-                        const diskInfo = h.disk_info ? JSON.parse(h.disk_info) : [];
-                        const gpuInfo = h.gpu_info ? JSON.parse(h.gpu_info) : [];
-
-                        let cpuStr = cpuInfo.length > 0 ? cpuInfo.map(c => c.name || '?').join(', ') : '-';
-                        let memStr = memInfo.total_capacity ? `${(memInfo.total_capacity / (1024**3)).toFixed(1)} GB` : '-';
-                        let diskStr = diskInfo.length > 0 ? diskInfo.map(d => `${d.model||'?'} (${(d.size/(1024**3)).toFixed(0)}GB)`).join(', ') : '-';
-                        let gpuStr = gpuInfo.length > 0 ? gpuInfo.map(g => g.name || '?').join(', ') : '-';
-
-                        html += `<tr>
-                            <td>${formatDateTime(h.timestamp)}</td>
-                            <td title="${cpuInfo.map(c=>JSON.stringify(c)).join('\\n')}">${cpuStr}</td>
-                            <td>${memStr}</td>
-                            <td title="${diskInfo.map(d=>JSON.stringify(d)).join('\\n')}">${diskStr}</td>
-                            <td title="${gpuInfo.map(g=>JSON.stringify(g)).join('\\n')}">${gpuStr}</td>
-                        </tr>`;
-                    });
-                    html += '</tbody></table>';
-                    container.innerHTML = html;
-                } else {
-                    container.innerHTML = '<div class="empty-state"><p>暂无历史记录</p></div>';
-                }
-            } catch (error) {
-                container.innerHTML = '<div class="empty-state"><p>加载历史记录失败</p></div>';
-            }
-        }
-
-        // ===== 客户端告警记录 =====
-        async function loadClientAlerts(clientId) {
-            const container = document.getElementById('tabAlerts');
-            container.innerHTML = '<div class="loading">加载告警记录...</div>';
-            try {
-                const response = await fetch(`${API_BASE}/api/client/${clientId}/alerts`);
-                const result = await response.json();
-                if (result.status === 'success' && result.data.length > 0) {
-                    let html = `<p style="margin-bottom:15px;color:#718096;">共 ${result.data.length} 条告警记录</p>`;
-                    result.data.forEach(alert => {
-                        const changes = alert.alert_detail || [];
-                        let detailHtml = changes.map(c => `<p><strong>${c.label}:</strong> ${c.old} → ${c.new}</p>`).join('');
-                        const statusClass = alert.resolved ? 'resolved' : '';
-                        const statusText = alert.resolved ? '[已解决]' : '[未解决]';
-                        html += `<div class="alert-item ${statusClass}">
-                            <div class="alert-header">
-                                <span class="alert-type">${statusText} ${formatDateTime(alert.created_at)}</span>
-                            </div>
-                            <div class="alert-detail">${detailHtml}</div>
-                            ${!alert.resolved ? `<div class="alert-actions">
-                                <button class="btn btn-success btn-small" onclick="resolveSingleAlert(${alert.id})">标记为已解决</button>
-                            </div>` : ''}
-                        </div>`;
-                    });
-                    container.innerHTML = html;
-                } else {
-                    container.innerHTML = '<div class="empty-state"><p>暂无告警记录</p></div>';
-                }
-            } catch (error) {
-                container.innerHTML = '<div class="empty-state"><p>加载告警记录失败</p></div>';
-            }
-        }
-
-        // ===== 分组管理 =====
-        async function showGroupManageModal() {
-            document.getElementById('groupManageModal').classList.add('active');
-            await loadGroupManageList();
-        }
-
-        async function loadGroupManageList() {
-            const container = document.getElementById('groupManageBody');
-            try {
-                const response = await fetch(`${API_BASE}/api/groups`);
-                const result = await response.json();
-                if (result.status === 'success') {
-                    const groups = result.data;
-                    if (groups.length === 0) {
-                        container.innerHTML = '<div class="empty-state"><p>暂无分组</p></div>';
-                        return;
-                    }
-                    let html = '';
-                    groups.forEach(g => {
-                        const isDefault = g.name === '默认分组';
-                        html += `<div class="group-item">
-                            <div class="group-info">
-                                <div class="group-name">${g.name}${isDefault ? ' <span style="color:#718096;font-size:11px;">(默认)</span>' : ''}</div>
-                                <div class="group-desc">${g.description || '无描述'}</div>
-                            </div>
-                            <span class="group-count">${g.client_count} 台设备</span>
-                            <div class="group-actions">
-                                <button class="btn btn-info btn-small" onclick="showEditGroup(${g.id}, '${g.name.replace(/'/g, "\\'")}', '${(g.description||'').replace(/'/g, "\\'")}')" ${isDefault && g.client_count === 0 ? '' : ''}>编辑</button>
-                                ${!isDefault ? `<button class="btn btn-danger btn-small" onclick="deleteGroup(${g.id}, '${g.name.replace(/'/g, "\\'")}', ${g.client_count})">删除</button>` : ''}
-                            </div>
-                        </div>`;
-                    });
-                    container.innerHTML = html;
-                }
-            } catch (error) {
-                container.innerHTML = '<div class="empty-state"><p>加载失败</p></div>';
-            }
-        }
-
-        function showEditGroup(id, name, desc) {
-            document.getElementById('editGroupId').value = id;
-            document.getElementById('editGroupName').value = name;
-            document.getElementById('editGroupDescription').value = desc;
-            document.getElementById('editGroupModal').classList.add('active');
-        }
-
-        async function deleteGroup(groupId, groupName, clientCount) {
-            if (clientCount > 0) {
-                if (!confirm(`分组 "${groupName}" 下有 ${clientCount} 台设备，删除后这些设备将变为未分组状态。确定删除？`)) return;
-            } else {
-                if (!confirm(`确定删除分组 "${groupName}"？`)) return;
-            }
-            try {
-                const res = await fetch(`${API_BASE}/api/groups/${groupId}`, { method: 'DELETE' });
-                const r = await res.json();
-                if (r.status === 'success') {
-                    showToast('删除成功', 'success');
-                    loadGroupManageList();
-                    loadGroups();
-                    loadClients();
-                } else alert(r.error);
-            } catch(e) { alert('删除失败'); }
-        }
-
-        // 编辑分组表单
-        document.getElementById('editGroupForm').addEventListener('submit', async (e) => {
-            e.preventDefault();
-            try {
-                const id = document.getElementById('editGroupId').value;
-                const res = await fetch(`${API_BASE}/api/groups/${id}`, {
-                    method: 'PUT',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ name: document.getElementById('editGroupName').value, description: document.getElementById('editGroupDescription').value })
-                });
-                const r = await res.json();
-                if (r.status === 'success') {
-                    showToast('修改成功', 'success');
-                    closeModal('editGroupModal');
-                    loadGroupManageList();
-                    loadGroups();
-                    loadClients();
-                } else alert(r.error);
-            } catch(e) { alert('修改失败'); }
-        });
-
-        // ===== 分配分组 =====
-        function showAssignGroupModal(clientId) {
-            document.getElementById('assignClientId').value = clientId;
-            document.getElementById('assignGroupModal').classList.add('active');
-        }
-
-        document.getElementById('assignGroupForm').addEventListener('submit', async (e) => {
-            e.preventDefault();
-            try {
-                const res = await fetch(`${API_BASE}/api/clients/${document.getElementById('assignClientId').value}/group`, {
-                    method: 'PUT',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ group_id: document.getElementById('assignGroupSelect').value })
-                });
-                const r = await res.json();
-                if (r.status === 'success') {
-                    showToast('分配成功', 'success');
-                    closeModal('assignGroupModal');
-                    loadClients();
-                    loadGroups();
-                } else alert(r.error);
-            } catch(e) { alert('分配失败'); }
-        });
-
-        // ===== 批量分配分组 =====
-        function showBatchGroupModal() {
-            const count = selectedClients.size;
-            if (count === 0) { showToast('请先选择客户端', 'error'); return; }
-            document.getElementById('batchGroupCount').textContent = count;
-            document.getElementById('batchGroupModal').classList.add('active');
-        }
-
-        document.getElementById('batchGroupForm').addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const groupId = document.getElementById('batchGroupSelect').value;
-            if (!groupId) { showToast('请选择分组', 'error'); return; }
-            try {
-                const res = await fetch(`${API_BASE}/api/clients/batch-group`, {
-                    method: 'PUT',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ client_ids: Array.from(selectedClients), group_id: groupId })
-                });
-                const r = await res.json();
-                if (r.status === 'success') {
-                    showToast(r.message, 'success');
-                    closeModal('batchGroupModal');
-                    clearSelection();
-                    loadClients();
-                    loadGroups();
-                } else alert(r.error);
-            } catch(e) { alert('批量分配失败'); }
-        });
-
-        // ===== 批量删除 =====
-        async function batchDelete() {
-            const ids = Array.from(selectedClients);
-            if (ids.length === 0) { showToast('请先选择客户端', 'error'); return; }
-            if (!confirm(`确定删除 ${ids.length} 个客户端及其所有数据？`)) return;
-            try {
-                const res = await fetch(`${API_BASE}/api/clients/batch-delete`, {
-                    method: 'DELETE',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ client_ids: ids })
-                });
-                const r = await res.json();
-                if (r.status === 'success') {
-                    showToast(r.message, 'success');
-                    clearSelection();
-                    loadClients();
-                    loadGroups();
-                } else alert(r.error);
-            } catch(e) { alert('批量删除失败'); }
-        }
-
-        // ===== 批量导出 Excel =====
-        function batchExportExcel() {
-            const ids = Array.from(selectedClients);
-            if (ids.length === 0) { showToast('请先选择客户端', 'error'); return; }
-            window.open(`${API_BASE}/api/export/excel?client_ids=${encodeURIComponent(ids.join(','))}`, '_blank');
-        }
-
-        // ===== 创建分组 =====
-        function showCreateGroupModal() { document.getElementById('createGroupModal').classList.add('active'); }
-
-        document.getElementById('createGroupForm').addEventListener('submit', async (e) => {
-            e.preventDefault();
-            try {
-                const res = await fetch(`${API_BASE}/api/groups`, {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ name: document.getElementById('groupName').value, description: document.getElementById('groupDescription').value })
-                });
-                const r = await res.json();
-                if (r.status === 'success') {
-                    showToast('创建成功', 'success');
-                    closeModal('createGroupModal');
-                    document.getElementById('createGroupForm').reset();
-                    loadGroups();
-                    loadClients();
-                } else alert(r.error);
-            } catch(e) { alert('创建失败'); }
-        });
-
-        // ===== 删除客户端 =====
-        async function deleteClient(clientId) {
-            if (!confirm(`确定删除客户端 ${clientId}?`)) return;
-            try {
-                const res = await fetch(`${API_BASE}/api/clients/${clientId}`, { method: 'DELETE' });
-                const r = await res.json();
-                if (r.status === 'success') {
-                    showToast('删除成功', 'success');
-                    selectedClients.delete(clientId);
-                    updateBatchToolbar();
-                    loadClients();
-                    loadGroups();
-                } else alert(r.error);
-            } catch(e) { alert('删除失败'); }
-        }
-
-        // ===== 导出 =====
-        function exportData(format) {
-            const gid = document.getElementById('groupFilter').value;
-            if (format === 'excel') {
-                window.open(gid ? `${API_BASE}/api/export/excel?group_id=${gid}` : `${API_BASE}/api/export/excel`, '_blank');
-            } else {
-                window.open(gid ? `${API_BASE}/api/export/${format}?group_id=${gid}` : `${API_BASE}/api/export/${format}`, '_blank');
-            }
-        }
-
-        // ===== 告警中心 =====
-        async function showAlertCenterModal() {
-            document.getElementById('alertCenterModal').classList.add('active');
-            await loadUnresolvedAlerts();
-            await loadResolvedAlerts();
-            updateAlertBadge();
-        }
-
-        function switchAlertTab(btn, tabId) {
-            btn.closest('.modal-body').querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-            btn.classList.add('active');
-            btn.closest('.modal-body').querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-            document.getElementById(tabId).classList.add('active');
-        }
-
-        async function loadUnresolvedAlerts() {
-            const container = document.getElementById('unresolvedAlertsList');
-            try {
-                const response = await fetch(`${API_BASE}/api/alerts?resolved=false&per_page=50`);
-                const result = await response.json();
-                if (result.status === 'success' && result.data.length > 0) {
-                    let html = '';
-                    result.data.forEach(alert => {
-                        const changes = alert.alert_detail || [];
-                        let detailHtml = changes.map(c => `<p><strong>${c.label}:</strong> ${c.old} → ${c.new}</p>`).join('');
-                        html += `<div class="alert-item" data-alert-id="${alert.id}">
-                            <div class="alert-header">
-                                <span class="alert-type">${alert.client_id}</span>
-                                <span class="alert-time">${formatDateTime(alert.created_at)}</span>
-                            </div>
-                            <p style="font-size:12px;color:#718096;margin-bottom:5px;">IP: ${alert.local_ip || '-'} | 主机名: ${alert.hostname || '-'}</p>
-                            <div class="alert-detail">${detailHtml}</div>
-                            <div class="alert-actions">
-                                <button class="btn btn-success btn-small" onclick="resolveSingleAlert(${alert.id})">标记为已解决</button>
-                            </div>
-                        </div>`;
-                    });
-                    container.innerHTML = html;
-                } else {
-                    container.innerHTML = '<div class="empty-state"><p>暂无未解决告警</p></div>';
-                }
-            } catch (error) {
-                container.innerHTML = '<div class="empty-state"><p>加载失败</p></div>';
-            }
-        }
-
-        async function loadResolvedAlerts() {
-            const container = document.getElementById('resolvedAlertsList');
-            try {
-                const response = await fetch(`${API_BASE}/api/alerts?resolved=true&per_page=50`);
-                const result = await response.json();
-                if (result.status === 'success' && result.data.length > 0) {
-                    let html = '';
-                    result.data.forEach(alert => {
-                        const changes = alert.alert_detail || [];
-                        let detailHtml = changes.map(c => `<p><strong>${c.label}:</strong> ${c.old} → ${c.new}</p>`).join('');
-                        html += `<div class="alert-item resolved">
-                            <div class="alert-header">
-                                <span class="alert-type">${alert.client_id}</span>
-                                <span class="alert-time">${formatDateTime(alert.created_at)}</span>
-                            </div>
-                            <p style="font-size:12px;color:#718096;margin-bottom:5px;">IP: ${alert.local_ip || '-'} | 主机名: ${alert.hostname || '-'}</p>
-                            <div class="alert-detail">${detailHtml}</div>
-                        </div>`;
-                    });
-                    container.innerHTML = html;
-                } else {
-                    container.innerHTML = '<div class="empty-state"><p>暂无已解决告警</p></div>';
-                }
-            } catch (error) {
-                container.innerHTML = '<div class="empty-state"><p>加载失败</p></div>';
-            }
-        }
-
-        async function resolveSingleAlert(alertId) {
-            try {
-                const res = await fetch(`${API_BASE}/api/alerts/${alertId}`, {
-                    method: 'PUT',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ resolved: true })
-                });
-                const r = await res.json();
-                if (r.status === 'success') {
-                    showToast('已标记为已解决', 'success');
-                    loadUnresolvedAlerts();
-                    loadResolvedAlerts();
-                    updateAlertBadge();
-                    loadClients(); // 刷新客户端列表以更新硬件状态
-                } else alert(r.error);
-            } catch(e) { alert('操作失败'); }
-        }
-
-        async function batchResolveAlerts() {
-            const unresolvedItems = document.querySelectorAll('#unresolvedAlertsList .alert-item');
-            if (unresolvedItems.length === 0) { showToast('没有未解决的告警', 'error'); return; }
-
-            const alertIds = Array.from(unresolvedItems).map(el => parseInt(el.dataset.alertId));
-            if (!confirm(`确定批量标记 ${alertIds.length} 个告警为已解决？`)) return;
-
-            try {
-                const res = await fetch(`${API_BASE}/api/alerts/batch-resolve`, {
-                    method: 'PUT',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ alert_ids: alertIds })
-                });
-                const r = await res.json();
-                if (r.status === 'success') {
-                    showToast(r.message, 'success');
-                    loadUnresolvedAlerts();
-                    loadResolvedAlerts();
-                    updateAlertBadge();
-                    loadClients();
-                } else alert(r.error);
-            } catch(e) { alert('批量操作失败'); }
-        }
-
-        async function updateAlertBadge() {
-            try {
-                const response = await fetch(`${API_BASE}/api/alerts?resolved=false&per_page=1`);
-                const result = await response.json();
-                const badge = document.getElementById('alertBadge');
-                if (result.status === 'success' && result.pagination.total > 0) {
-                    badge.textContent = result.pagination.total;
-                    badge.style.display = 'inline';
-                } else {
-                    badge.style.display = 'none';
-                }
-            } catch (error) { console.error('更新告警徽章失败:', error); }
-        }
-
-        // ===== 邮件配置 =====
-        async function showEmailConfigModal() {
-            document.getElementById('emailConfigModal').classList.add('active');
-            await loadEmailConfig();
-            await loadAlertSettings();
-        }
-
-        async function loadEmailConfig() {
-            try {
-                const response = await fetch(`${API_BASE}/api/email-config`);
-                const result = await response.json();
-                if (result.status === 'success') {
-                    const config = result.data;
-                    document.getElementById('smtpHost').value = config.smtp_host || 'smtp.qq.com';
-                    document.getElementById('smtpPort').value = config.smtp_port || 465;
-                    document.getElementById('smtpUser').value = config.smtp_user || '';
-                    document.getElementById('smtpPassword').value = config.smtp_password || '';
-                    document.getElementById('senderName').value = config.sender_name || '硬件监控系统';
-                    const recipients = Array.isArray(config.recipients) ? config.recipients.join(', ') : '';
-                    document.getElementById('recipients').value = recipients;
-                    document.getElementById('emailEnabled').checked = !!config.enabled;
-                }
-            } catch (error) { console.error('加载邮件配置失败:', error); }
-        }
-
-        async function loadAlertSettings() {
-            try {
-                const response = await fetch(`${API_BASE}/api/alert-settings`);
-                const result = await response.json();
-                if (result.status === 'success') {
-                    const settings = result.data;
-                    document.getElementById('alertEnabled').checked = !!settings.alert_enabled;
-                    document.getElementById('emailEnabled').checked = !!settings.email_enabled;
-                    document.getElementById('monitorCpu').checked = !!settings.monitor_cpu;
-                    document.getElementById('monitorGpu').checked = !!settings.monitor_gpu;
-                    document.getElementById('monitorMemory').checked = !!settings.monitor_memory;
-                    document.getElementById('monitorDisk').checked = !!settings.monitor_disk;
-                    document.getElementById('monitorNetwork').checked = !!settings.monitor_network;
-                    document.getElementById('monitorMotherboard').checked = !!settings.monitor_motherboard;
-                    document.getElementById('monitorBios').checked = !!settings.monitor_bios;
-                }
-            } catch (error) { console.error('加载告警设置失败:', error); }
-        }
-
-        // 告警设置表单提交
-        document.getElementById('alertSettingsForm').addEventListener('submit', async (e) => {
-            e.preventDefault();
-            try {
-                const res = await fetch(`${API_BASE}/api/alert-settings`, {
-                    method: 'PUT',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({
-                        alert_enabled: document.getElementById('alertEnabled').checked,
-                        email_enabled: document.getElementById('emailEnabled').checked,
-                        monitor_cpu: document.getElementById('monitorCpu').checked,
-                        monitor_gpu: document.getElementById('monitorGpu').checked,
-                        monitor_memory: document.getElementById('monitorMemory').checked,
-                        monitor_disk: document.getElementById('monitorDisk').checked,
-                        monitor_network: document.getElementById('monitorNetwork').checked,
-                        monitor_motherboard: document.getElementById('monitorMotherboard').checked,
-                        monitor_bios: document.getElementById('monitorBios').checked
-                    })
-                });
-                const r = await res.json();
-                if (r.status === 'success') {
-                    showToast('告警设置已保存', 'success');
-                } else alert(r.error);
-            } catch(e) { alert('保存失败'); }
-        });
-
-        // 恢复默认告警设置
-        function resetAlertSettings() {
-            document.getElementById('alertEnabled').checked = true;
-            document.getElementById('emailEnabled').checked = false;
-            document.getElementById('monitorCpu').checked = true;
-            document.getElementById('monitorGpu').checked = true;
-            document.getElementById('monitorMemory').checked = true;
-            document.getElementById('monitorDisk').checked = true;
-            document.getElementById('monitorNetwork').checked = false;
-            document.getElementById('monitorMotherboard').checked = false;
-            document.getElementById('monitorBios').checked = false;
-            showToast('已恢复默认设置（告警开启、邮件关闭）', 'info');
-        }
-
-        document.getElementById('emailConfigForm').addEventListener('submit', async (e) => {
-            e.preventDefault();
-            try {
-                const recipientsStr = document.getElementById('recipients').value;
-                const recipients = recipientsStr.split(',').map(s => s.trim()).filter(s => s);
-
-                const res = await fetch(`${API_BASE}/api/email-config`, {
-                    method: 'PUT',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({
-                        smtp_host: document.getElementById('smtpHost').value,
-                        smtp_port: parseInt(document.getElementById('smtpPort').value),
-                        smtp_user: document.getElementById('smtpUser').value,
-                        smtp_password: document.getElementById('smtpPassword').value,
-                        sender_name: document.getElementById('senderName').value,
-                        recipients: recipients,
-                        enabled: document.getElementById('emailEnabled').checked
-                    })
-                });
-                const r = await res.json();
-                if (r.status === 'success') {
-                    showToast('邮件配置已保存', 'success');
-                    closeModal('emailConfigModal');
-                } else alert(r.error);
-            } catch(e) { alert('保存失败'); }
-        });
-
-        async function testEmailConfig() {
-            const testRecipient = prompt('请输入测试收件人邮箱:');
-            if (!testRecipient) return;
-
-            showToast('正在发送测试邮件...', 'info');
-            try {
-                const res = await fetch(`${API_BASE}/api/email-config/test`, {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({
-                        smtp_host: document.getElementById('smtpHost').value,
-                        smtp_port: parseInt(document.getElementById('smtpPort').value),
-                        smtp_user: document.getElementById('smtpUser').value,
-                        smtp_password: document.getElementById('smtpPassword').value,
-                        sender_name: document.getElementById('senderName').value,
-                        test_recipient: testRecipient
-                    })
-                });
-                const r = await res.json();
-                if (r.status === 'success') {
-                    showToast('测试邮件发送成功', 'success');
-                } else {
-                    showToast(r.error || '测试邮件发送失败', 'error');
-                }
-            } catch(e) { showToast('测试邮件发送失败', 'error'); }
-        }
-
-        // ===== 工具函数 =====
-        function closeModal(id) { document.getElementById(id).classList.remove('active'); }
-        function formatDateTime(s) { return s ? new Date(s).toLocaleString('zh-CN') : '-'; }
-        function showToast(msg, type='info') {
-            const t = document.createElement('div');
-            t.className = `toast toast-${type}`;
-            t.textContent = msg;
-            document.body.appendChild(t);
-            setTimeout(() => t.remove(), 3000);
-        }
-
-        // ===== 登录相关 =====
-        async function checkLoginAndShowUser() {
-            try {
-                const response = await fetch(`${API_BASE}/api/check-login`);
-                const result = await response.json();
-                if (result.logged_in) {
-                    document.getElementById('userInfo').textContent = `👤 ${result.username}`;
-                } else {
-                    window.location.href = '/login';
-                }
-            } catch (error) {
-                console.error('检查登录状态失败:', error);
-            }
-        }
-
-        async function logout() {
-            if (!confirm('确定要退出登录吗？')) return;
-            
-            try {
-                const response = await fetch(`${API_BASE}/api/logout`, {
-                    method: 'POST'
-                });
-                const result = await response.json();
-                if (result.status === 'success') {
-                    showToast('已退出登录', 'success');
-                    setTimeout(() => {
-                        window.location.href = '/login';
-                    }, 500);
-                }
-            } catch (error) {
-                showToast('退出失败', 'error');
-            }
-        }
-
-        // ===== 初始化 =====
-        document.addEventListener('DOMContentLoaded', () => {
-            checkLoginAndShowUser(); // 检查登录状态
-            loadGroups(); loadClients();
-            document.getElementById('groupFilter').addEventListener('change', loadClients);
-            setInterval(() => { loadClients(); loadGroups(); }, 30000);
-            updateAlertBadge(); // 初始化时更新告警徽章
-            setInterval(updateAlertBadge, 60000); // 每分钟更新一次告警徽章
-        });
-
-        document.querySelectorAll('.modal').forEach(m => {
-            m.addEventListener('click', (e) => { if (e.target === m) m.classList.remove('active'); });
-        });
-    </script>
+      }
+    }
+  });
+  tbody.innerHTML=clientsData.map(c=>{
+    const lr=parseDt(c.last_report);const online=lr?(now-lr)/3600000<24:false;
+    const gid=c.group_id;const g=groupsData.find(x=>x.id===gid);
+    return `<tr onclick="showDetail('${c.client_id}')">
+      <td onclick="event.stopPropagation()">${makeCb(null,selSet.has(c.client_id),`toggleSel('${c.client_id}',this.querySelector('.cb-input').checked)`)}</td>
+      <td class="hostname">${c.hostname||c.client_id}</td>
+      <td style="font-family:'Consolas','Courier New',monospace;font-size:12px">${c.local_ip||'-'}</td>
+      <td>${g?g.name:'未分组'}</td>
+      <td style="font-size:12px;font-family:'Consolas','Courier New',monospace;color:var(--text-muted)">${fmtDt(c.last_report)}</td>
+      <td><span class="status-badge ${online?'online':'offline'}"><span class="pulse"></span>${online?'在线':'离线'}</span></td>
+      <td class="action-btns" onclick="event.stopPropagation()">
+        <button class="action-btn" style="width:auto;padding:0 8px;font-size:11px" title="采集" onclick="doCollectOne('${c.client_id}')">采集</button>
+        <button class="action-btn" style="width:auto;padding:0 8px;font-size:11px" title="分组" onclick="showAssign('${c.client_id}')">分组</button>
+        <button class="action-btn danger" style="width:auto;padding:0 8px;font-size:11px" title="删除" onclick="doDelete('${c.client_id}')">删除</button>
+      </td></tr>`;
+  }).join('');
+  document.getElementById('tblInfo').textContent=`共 ${clientsData.length} 条`;
+}
+
+function sortBy(field){
+  if(curSortField===field){
+    curSortOrder=curSortOrder==='asc'?'desc':'asc';
+  }else{
+    curSortField=field;
+    curSortOrder='asc';
+  }
+  loadClients();
+}
+
+// ===== Selection =====
+function toggleSel(id,on){if(on)selSet.add(id);else selSet.delete(id);updateBulk();renderSelAll();}
+function toggleSelAll(){const on=!selAllState;selAllState=on;clientsData.forEach(c=>{if(on)selSet.add(c.client_id);else selSet.delete(c.client_id);});loadClients();}
+function renderSelAll(){document.getElementById('th-selAll').innerHTML=makeCb('selAll2',selAllState);const tw=document.getElementById('clientSelectAllWrap');if(tw){tw.classList.toggle('checked',selAllState);const ti=tw.querySelector('.cb-input');if(ti)ti.checked=selAllState;}}
+let selAllState=false;
+function clearSel(){selSet.clear();selAllState=false;loadClients();}
+function updateBulk(){document.getElementById('bulkCount').textContent=selSet.size;document.getElementById('bulkBar').classList.toggle('active',selSet.size>0);const sc=document.getElementById('clientSelectedCount');if(sc)sc.textContent=`已选 ${selSet.size} 项`;}
+
+// ===== Collect =====
+async function doCollectOne(id){toast('info','采集中...');const r=await api(`/api/collect/${id}`,{method:'POST'});toast(r?.status==='success'?'success':'error',r?.message||'采集失败');setTimeout(loadClients,2000);}
+async function doCollectAll(){toast('info','一键采集中...');const r=await api('/api/collect/all',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});toast(r?.status==='completed'?'success':'error',r?`成功${r.success} 失败${r.failed}`:'采集失败');setTimeout(loadClients,2000);}
+
+// ===== Delete =====
+async function doDelete(id){if(!confirm('确定删除?'))return;const r=await api(`/api/clients/${id}`,{method:'DELETE'});if(r?.status==='success'){toast('success','已删除');loadClients();loadGroups();}else toast('error',r?.error||'删除失败');}
+async function bulkDelete(){if(!selSet.size)return;if(!confirm(`确定删除 ${selSet.size} 个客户端?`))return;const r=await api('/api/clients/batch-delete',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({client_ids:Array.from(selSet)})});if(r?.status==='success'){toast('success',r.message);clearSel();loadClients();loadGroups();}}
+
+// ===== Export =====
+function doExport(fmt){const gid=curGroupFilter;window.open(`/api/export/${fmt}${gid?'?group_id='+gid:''}`,'_blank');}
+
+// ===== Groups CRUD =====
+function showGroupManage(){document.getElementById('groupModal').classList.add('active');renderGroupList();}
+function renderGroupList(){const c=document.getElementById('groupBody');c.innerHTML=groupsData.map(g=>`<div style="display:flex;align-items:center;gap:12px;padding:12px;background:var(--bg-base);border-radius:var(--radius);margin-bottom:8px"><div style="flex:1"><div style="font-size:14px;font-weight:500">${g.name}</div><div style="font-size:12px;color:var(--text-muted)">${g.description||'无描述'} · ${g.client_count} 台</div></div>${g.name!=='默认分组'?`<button class="btn btn-danger btn-sm" onclick="doDelGroup(${g.id})">删除</button>`:''}</div>`).join('');}
+function showCreateGroup(){document.getElementById('newGroupModal').classList.add('active');}
+async function doCreateGroup(){const n=document.getElementById('ngName').value.trim();if(!n){toast('error','请输入名称');return;}const r=await api('/api/groups',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:n,description:document.getElementById('ngDesc').value})});if(r?.status==='success'){toast('success','创建成功');closeM('newGroupModal');loadGroups();loadClients();}else toast('error',r?.error||'创建失败');}
+async function doDelGroup(id){if(!confirm('确定删除此分组?'))return;const r=await api(`/api/groups/${id}`,{method:'DELETE'});if(r?.status==='success'){toast('success','已删除');loadGroups();loadClients();renderGroupList();}}
+
+// ===== Assign =====
+function showAssign(id){curAssignId=id;document.getElementById('assignModal').classList.add('active');}
+async function doAssign(){const gid=document.getElementById('assignSel').value;const r=await api(`/api/clients/${curAssignId}/group`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({group_id:gid})});if(r?.status==='success'){toast('success','分配成功');closeM('assignModal');loadClients();loadGroups();}}
+
+// ===== Detail =====
+async function showDetail(id){
+  curDetailId=id;document.getElementById('detailHost').textContent=id;
+  document.getElementById('dtlHwContent').innerHTML='<div class="empty-state"><p>加载中...</p></div>';
+  document.getElementById('detailModal').classList.add('active');
+  // Reset tabs
+  document.querySelectorAll('#detailModal .tab-item').forEach((t,i)=>t.classList.toggle('active',i===0));
+  document.querySelectorAll('#detailModal .tab-content').forEach((c,i)=>c.classList.toggle('active',i===0));
+  const r=await api(`/api/client/${id}`);if(r?.status!=='success')return;
+  const hw=r.data.latest_hardware;if(!hw){document.getElementById('dtlHwContent').innerHTML='<div class="empty-state"><p>暂无硬件数据</p></div>';return;}
+  let h='';
+  const sec=(icon,title,content)=>{h+=`<div class="hw-section"><div class="hw-section-title"> ${title}</div><div class="hw-info-grid">${content}</div></div>`;};
+  if(hw.system)sec('fa-info-circle','系统',`<div class="hw-info-item"><span class="label">主机名</span><span class="value">${hw.system.hostname||'-'}</span></div><div class="hw-info-item"><span class="label">操作系统</span><span class="value">${hw.system.os_name||'-'}</span></div><div class="hw-info-item"><span class="label">版本</span><span class="value">${hw.system.os_version||'-'}</span></div><div class="hw-info-item"><span class="label">架构</span><span class="value">${hw.system.os_architecture||'-'}</span></div>`);
+  if(hw.cpu?.length)sec('fa-microchip','CPU',hw.cpu.map((c,i)=>`<div class="hw-info-item"><span class="label">CPU${i+1}</span><span class="value">${c.name||'-'} ${c.cores||'?'}核${c.threads||'?'}线程</span></div>`).join(''));
+  if(hw.memory)sec('fa-memory','内存',`<div class="hw-info-item"><span class="label">总容量</span><span class="value">${hw.memory.total_capacity?(hw.memory.total_capacity/1073741824).toFixed(1)+' GB':'-'}</span></div>`+(hw.memory.modules||[]).map((m,i)=>`<div class="hw-info-item"><span class="label">内存${i+1}</span><span class="value">${(m.capacity/1073741824).toFixed(1)}GB ${m.speed||''}MHz ${m.manufacturer||''}</span></div>`).join(''));
+  if(hw.disk?.length)sec('fa-hdd','硬盘',hw.disk.map((d,i)=>`<div class="hw-info-item"><span class="label">硬盘${i+1}</span><span class="value">${d.model||'-'} (${(d.size/1073741824).toFixed(0)}GB)</span></div>`).join(''));
+  if(hw.gpu?.length)sec('fa-tv','显卡',hw.gpu.map((g,i)=>`<div class="hw-info-item"><span class="label">显卡${i+1}</span><span class="value">${g.name||'-'}</span></div>`).join(''));
+  if(hw.network?.length)sec('fa-network-wired','网络',hw.network.map((n,i)=>`<div class="hw-info-item"><span class="label">${n.description||'网卡'+(i+1)}</span><span class="value">${n.mac_address||'-'} ${(n.ip_addresses||[]).join(', ')}</span></div>`).join(''));
+  if(hw.motherboard)sec('fa-server','主板',`<div class="hw-info-item"><span class="label">制造商</span><span class="value">${hw.motherboard.manufacturer||'-'}</span></div><div class="hw-info-item"><span class="label">型号</span><span class="value">${hw.motherboard.product||'-'}</span></div>`);
+  if(hw.bios)sec('fa-shield-alt','BIOS',`<div class="hw-info-item"><span class="label">制造商</span><span class="value">${hw.bios.manufacturer||'-'}</span></div><div class="hw-info-item"><span class="label">版本</span><span class="value">${hw.bios.version||'-'}</span></div>`);
+  if(hw.uptime&&!hw.uptime.error)sec('fa-clock','运行时间',`<div class="hw-info-item"><span class="label">启动时间</span><span class="value">${hw.uptime.boot_time||'-'}</span></div><div class="hw-info-item"><span class="label">已运行</span><span class="value">${hw.uptime.uptime_human||'-'}</span></div>`);
+  if(hw.temperature?.sensors?.length)sec('fa-thermometer-half','温度',hw.temperature.sensors.map(s=>`<div class="hw-info-item"><span class="label">${s.name}</span><span class="value" style="color:${s.value>80?'var(--danger)':s.value>60?'var(--warning)':'var(--accent)'}">${s.value}°C</span></div>`).join(''));
+  if(hw.fan?.sensors?.length)sec('fa-fan','风扇',hw.fan.sensors.map(s=>`<div class="hw-info-item"><span class="label">${s.name}</span><span class="value">${s.value} RPM</span></div>`).join(''));
+  if(hw.voltage?.sensors?.length)sec('fa-bolt','电压',hw.voltage.sensors.map(s=>`<div class="hw-info-item"><span class="label">${s.name}</span><span class="value">${s.value}V</span></div>`).join(''));
+  document.getElementById('dtlHwContent').innerHTML=h;
+  // Load history & alerts
+  loadDetailHistory(id);loadDetailAlerts(id);
+}
+async function loadDetailHistory(id){
+  const r=await api(`/api/client/${id}/history`);const c=document.getElementById('dtlHistContent');
+  if(r?.status!=='success'||!r.data.length){c.innerHTML='<div class="empty-state"><p>暂无历史记录</p></div>';return;}
+  c.innerHTML=r.data.map(h=>{const s=h.snapshot||{};return `<div style="padding:10px;background:var(--bg-base);border-radius:var(--radius);margin-bottom:8px"><div style="font-size:12px;color:var(--accent);margin-bottom:6px">${fmtDt(h.timestamp)}</div><div style="font-size:12px;color:var(--text-secondary)">${s.cpu?.[0]?.name||'-'} | ${s.memory?.total_capacity?(s.memory.total_capacity/1073741824).toFixed(1)+'GB':'-'} | ${s.disk?.[0]?.model||'-'}</div></div>`;}).join('');
+}
+async function loadDetailAlerts(id){
+  const r=await api(`/api/client/${id}/alerts`);const c=document.getElementById('dtlAlertContent');
+  if(r?.status!=='success'||!r.data.length){c.innerHTML='<div class="empty-state"><p>暂无告警</p></div>';return;}
+  c.innerHTML=r.data.map(a=>{
+    const changes=a.alert_detail||[];
+    return `<div class="alert-item ${a.resolved?'info':'warning'}"><div class="alert-icon">${a.resolved?'&#10003;':'!'}</div><div style="flex:1"><div class="alert-text">${changes.map(ch=>{
+      if(ch.change_type==='lost')return `<p style="color:var(--danger)"><strong>${ch.label}丢失:</strong> ${ch.message}</p>`;
+      if(ch.change_type==='downgraded')return `<p style="color:var(--warning)"><strong>${ch.label}降级:</strong> ${ch.message}</p>`;
+      if(ch.change_type==='upgraded')return `<p style="color:var(--accent)"><strong>${ch.label}升级:</strong> ${ch.message}（仅记录）</p>`;
+      return `<p><strong>${ch.label}:</strong> ${ch.old||''} → ${ch.new||''}</p>`;
+    }).join('')}</div><div class="alert-time">${fmtDt(a.created_at)} ${a.resolved?'[已解决]':''}</div></div></div>`;
+  }).join('');
+}
+async function doSetBaseline(){if(!curDetailId)return;if(!confirm('确定设为基准?'))return;const r=await api(`/api/client/${curDetailId}/baseline`,{method:'POST'});toast(r?.status==='success'?'success':'error',r?.message||r?.error||'操作失败');}
+
+// ===== Alerts =====
+async function loadAlerts(){
+  try{
+    const r=await api('/api/alerts?per_page=100');
+    if(!r||r.status!=='success'){
+      document.getElementById('tabUnresolved').innerHTML='<div style="text-align:center;padding:20px;color:var(--text-muted)">加载失败</div>';
+      return;
+    }
+    const all=r.data||[];
+  const ur=all.filter(a=>!a.resolved),re=all.filter(a=>a.resolved);
+  document.getElementById('unresolvedN').textContent=ur.length;
+  const renderA=(items,showResolve)=>items.map(a=>{const ch=a.alert_detail||[];return `<div class="alert-item warning"><div class="alert-icon">${ch.some(c=>c.change_type==='lost')?'!':ch.some(c=>c.change_type==='downgraded')?'!':'!'}</div><div style="flex:1"><div class="alert-text"><strong>${a.hostname||a.client_id}</strong> ${ch.map(c=>{
+      if(c.change_type==='lost')return `<p style="color:var(--danger)"><strong>丢失:</strong> ${c.message}</p>`;
+      if(c.change_type==='downgraded')return `<p style="color:var(--warning)"><strong>降级:</strong> ${c.message}</p>`;
+      return `<p>${c.label}: ${c.old||''} → ${c.new||''}</p>`;
+    }).join('')}</div><div class="alert-time">${fmtDt(a.created_at)}</div></div><div style="display:flex;gap:4px">${showResolve?`<button class="btn btn-secondary btn-sm" onclick="resolveAlert(${a.id})">解决</button>`:''}<button class="btn btn-danger btn-sm" onclick="deleteAlert(${a.id})">删除</button></div></div>`;}).join('');
+  // 已解决告警带复选框
+  const renderResolved=(items)=>items.map(a=>{const ch=a.alert_detail||[];return `<div class="alert-item info"><span class="cb-wrap" onclick="var i=this.querySelector('.cb-input');i.checked=!i.checked;syncCb(this);updateResolvedSelected()"><span class="cb-mark"></span><input type="checkbox" class="cb-input alert-cb" data-id="${a.id}"></span><div class="alert-icon">&#10003;</div><div style="flex:1"><div class="alert-text"><strong>${a.hostname||a.client_id}</strong> ${ch.map(c=>{
+      if(c.change_type==='lost')return `<p><strong>丢失:</strong> ${c.message}</p>`;
+      if(c.change_type==='downgraded')return `<p><strong>降级:</strong> ${c.message}</p>`;
+      return `<p>${c.label}: ${c.old||''} → ${c.new||''}</p>`;
+    }).join('')}</div><div class="alert-time">${fmtDt(a.created_at)} [已解决]</div></div><button class="btn btn-danger btn-sm" onclick="deleteAlert(${a.id})">删除</button></div>`;}).join('');
+  document.getElementById('tabUnresolved').innerHTML=ur.length?renderA(ur,true):'<div class="empty-state"><p>无未解决告警</p></div>';
+  document.getElementById('tabResolved').innerHTML=re.length?`<div style="margin-bottom:12px;display:flex;gap:8px;align-items:center"><span style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px" onclick="var w=this.querySelector('.cb-wrap');var i=w.querySelector('.cb-input');i.checked=!i.checked;syncCb(w);toggleSelectAllResolved(i.checked)"><span class="cb-wrap"><span class="cb-mark"></span><input type="checkbox" class="cb-input" id="selectAllResolved"></span> 全选</span><button class="btn btn-danger btn-sm" onclick="deleteSelectedAlerts()">删除选中</button><span id="resolvedSelectedCount" style="font-size:12px;color:var(--text-muted)">已选 0 项</span></div>`+renderResolved(re):'<div class="empty-state"><p>无已解决告警</p></div>';
+  refreshNavBadges();
+  }catch(e){document.getElementById('tabUnresolved').innerHTML=`<div style="text-align:center;padding:20px;color:var(--text-muted)">异常: ${e.message}</div>`;}
+}
+let selectedAlertIds=new Set();
+function updateResolvedSelected(){
+  selectedAlertIds.clear();
+  document.querySelectorAll('#tabResolved .alert-cb:checked').forEach(cb=>{selectedAlertIds.add(parseInt(cb.dataset.id));});
+  document.getElementById('resolvedSelectedCount').textContent=`已选 ${selectedAlertIds.size} 项`;
+  const allCbs=document.querySelectorAll('#tabResolved .alert-cb');
+  const selectAllCb=document.getElementById('selectAllResolved');
+  const selectAllWrap=selectAllCb?.closest('.cb-wrap');
+  if(selectAllCb&&allCbs.length>0){
+    const allChecked=selectedAlertIds.size===allCbs.length;
+    selectAllCb.checked=allChecked;
+    if(selectAllWrap)selectAllWrap.classList.toggle('checked',allChecked);
+  }
+}
+function toggleSelectAllResolved(checked){
+  document.querySelectorAll('#tabResolved .alert-cb').forEach(cb=>{
+    cb.checked=checked;
+    const wrap=cb.closest('.cb-wrap');if(wrap)wrap.classList.toggle('checked',checked);
+    if(checked)selectedAlertIds.add(parseInt(cb.dataset.id));
+    else selectedAlertIds.delete(parseInt(cb.dataset.id));
+  });
+  document.getElementById('resolvedSelectedCount').textContent=`已选 ${selectedAlertIds.size} 项`;
+}
+async function deleteSelectedAlerts(){
+  if(!selectedAlertIds.size){toast('info','请先选择要删除的告警');return;}
+  if(!confirm(`确定删除 ${selectedAlertIds.size} 条告警记录?`))return;
+  let ok=0;
+  for(const id of selectedAlertIds){
+    const r=await api(`/api/alerts/${id}`,{method:'DELETE'});
+    if(r?.status==='success')ok++;
+  }
+  toast('success',`已删除 ${ok} 条告警`);
+  selectedAlertIds.clear();
+  loadAlerts();
+  refreshNavBadges();
+}
+async function resolveAlert(id){const r=await api(`/api/alerts/${id}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({resolved:true})});if(r?.status==='success'){toast('success','已解决');loadAlerts();refreshNavBadges();}}
+async function deleteAlert(id){if(!confirm('确定删除此告警记录?'))return;const r=await api(`/api/alerts/${id}`,{method:'DELETE'});if(r?.status==='success'){toast('success','已删除');loadAlerts();refreshNavBadges();}else toast('error',r?.error||'删除失败');}
+
+async function resolveAllAlerts(){
+  if(!confirm('确定要将所有未解决告警标记为已解决吗？'))return;
+  toast('info','处理中...');
+  try{
+    const r=await api('/api/alerts?per_page=100');
+    if(!r||r.status!=='success'){toast('error','获取告警列表失败');return;}
+    const unresolved=(r.data||[]).filter(a=>!a.resolved);
+    if(!unresolved.length){toast('info','没有未解决的告警');return;}
+    let ok=0;
+    for(const a of unresolved){
+      const res=await api(`/api/alerts/${a.id}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({resolved:true})});
+      if(res?.status==='success')ok++;
+    }
+    toast('success',`已解决 ${ok} 条告警`);
+    loadAlerts();
+    refreshNavBadges();
+  }catch(e){toast('error','操作失败: '+e.message);}
+}
+
+async function refreshNavBadges(){
+  try{
+    const r=await api('/api/dashboard');
+    if(r?.status==='success'&&r.data){
+      document.getElementById('navAlertCount').textContent=r.data.unresolved_alerts||0;
+      document.getElementById('dsAlerts').textContent=r.data.unresolved_alerts||0;
+    }
+  }catch(e){}
+}
+
+// ===== AI Alerts =====
+async function loadAiAlerts(){
+  const r=await api('/api/process-alerts?per_page=50');const c=document.getElementById('aiAlertList');
+  if(r?.status!=='success'||!r.data.length){c.innerHTML='<div class="empty-state"><p>暂无进程告警</p></div>';return;}
+  c.innerHTML=r.data.map(a=>{
+    const alerts=a.alert_data?.alerts||[];const ai=a.ai_result;
+    let aiHtml='';
+    if(ai&&!ai.error)aiHtml=`<div class="ai-result"><div class="ai-header">AI 分析结果 - ${ai.risk_level||'未知'}风险</div><div class="ai-body">${ai.analysis||''}${ai.recommendations?.length?'<br><br><strong>建议:</strong><ul>'+ai.recommendations.map(r=>'<li>'+r+'</li>').join('')+'</ul>':''}</div></div>`;
+    return `<div class="alert-item ${a.resolved?'info':'warning'}"><div class="alert-icon" style="font-size:12px;font-weight:700">PA</div><div style="flex:1"><div class="alert-text"><strong>${a.hostname||a.client_id}</strong> ${alerts.map(p=>`<p>${p.process_name}(PID:${p.pid}) CPU:${p.cpu_percent}% MEM:${p.memory_percent}% 持续${p.duration_seconds}秒</p>`).join('')}</div><div class="alert-time">${fmtDt(a.created_at)}</div>${aiHtml}<div style="margin-top:8px">${!a.resolved?`<button class="btn btn-secondary btn-sm" onclick="resolvePA(${a.id})">标记已处理</button> `:''}<button class="btn btn-info btn-sm" onclick="reanalyzePA(${a.id})"> ${ai?'重新':'AI '}分析</button></div></div></div>`;
+  }).join('');
+}
+async function resolvePA(id){const r=await api(`/api/process-alerts/${id}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({resolved:true})});if(r?.status==='success'){toast('success','已处理');loadAiAlerts();}}
+async function reanalyzePA(id){toast('info','AI 分析中...');const r=await api(`/api/process-alerts/${id}/reanalyze`,{method:'POST'});toast(r?.status==='success'?'success':'error',r?.status==='success'?'分析完成':'分析失败');loadAiAlerts();}
+
+// ===== AI Hosts =====
+async function loadAiHosts(){
+  const r=await api('/api/ai/hosts');const c=document.getElementById('aiHostList');
+  if(r?.status!=='success'||!r.data.length){c.innerHTML='<div class="empty-state"><p>暂未添加</p></div>';return;}
+  c.innerHTML=r.data.map(h=>`<div style="display:flex;align-items:center;gap:12px;padding:10px 12px;background:var(--bg-base);border-radius:var(--radius);margin-bottom:6px"><span style="font-size:13px;font-weight:600;color:var(--accent);width:24px;text-align:center">H</span><div style="flex:1"><div style="font-size:13px;font-weight:500">${h.hostname||h.client_id}</div><div style="font-size:11px;color:var(--text-muted)">${h.description||''}</div></div><button class="action-btn danger" style="width:auto;padding:0 10px;font-size:11px" onclick="rmAiHost(${h.id})">移除</button></div>`).join('');
+}
+async function rmAiHost(id){if(!confirm('确定移除?'))return;const r=await api(`/api/ai/hosts/${id}`,{method:'DELETE'});if(r?.status==='success'){toast('success','已移除');loadAiHosts();}}
+
+// ===== AI Config =====
+async function loadAiConfig(){try{const r=await api('/api/ai/config');if(r?.status!=='success')return;const c=r.data;document.getElementById('aiEnabled').checked=!!c.enabled;document.getElementById('aiAuto').checked=!!c.auto_analyze;document.getElementById('aiUrl').value=c.api_base_url||'';document.getElementById('aiKey').value=c.api_key||'';document.getElementById('aiModel').value=c.model||'';document.getElementById('aiTokens').value=c.max_tokens||2000;document.getElementById('aiTemp').value=c.temperature||0.3;document.getElementById('aiPrompt').value=c.system_prompt||'';}catch(e){}}
+async function saveAi(){const r=await api('/api/ai/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:document.getElementById('aiEnabled').checked,auto_analyze:document.getElementById('aiAuto').checked,api_base_url:document.getElementById('aiUrl').value,api_key:document.getElementById('aiKey').value,model:document.getElementById('aiModel').value,max_tokens:parseInt(document.getElementById('aiTokens').value),temperature:parseFloat(document.getElementById('aiTemp').value),system_prompt:document.getElementById('aiPrompt').value})});toast(r?.status==='success'?'success':'error',r?.message||r?.error||'保存失败');}
+async function testAi(){toast('info','测试中...');const r=await api('/api/ai/config/test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({api_base_url:document.getElementById('aiUrl').value,api_key:document.getElementById('aiKey').value,model:document.getElementById('aiModel').value})});toast(r?.status==='success'?'success':'error',r?.message||r?.error||'测试失败');}
+function showAddAiHost(){document.getElementById('addAiModal').classList.add('active');document.getElementById('aiStep1').style.display='';document.getElementById('aiStep2').style.display='none';document.getElementById('aiS1').classList.add('active');document.getElementById('aiS2').classList.remove('active');loadAiStep1();}
+async function loadAiStep1(){
+  const r=await api('/api/groups');if(r?.status!=='success')return;
+  let html='';
+  // 先计算未分组数量
+  const allR=await api('/api/clients');const ungroupedCount=allR?.status==='success'?allR.data.filter(c=>!c.group_id).length:0;
+  if(ungroupedCount>0)html+=`<div class="group-item" onclick="aiGo2('ungrouped')" style="padding:12px;margin-bottom:4px"><span class="dot" style="background:var(--text-muted)"></span><span>未分组</span><span class="count">${ungroupedCount} 台</span>▶️</div>`;
+  html+=r.data.filter(g=>g.client_count>0).map(g=>`<div class="group-item" onclick="aiGo2(${g.id})" style="padding:12px;margin-bottom:4px"><span class="dot" style="background:var(--accent)"></span><span>${g.name}</span><span class="count">${g.client_count} 台</span>▶️</div>`).join('');
+  document.getElementById('aiStep1').innerHTML=html;
+}
+async function aiGo2(gid){
+  aiGrp=gid;aiPicks.clear();
+  document.getElementById('aiS1').classList.remove('active');document.getElementById('aiS2').classList.add('active');
+  document.getElementById('aiStep1').style.display='none';document.getElementById('aiStep2').style.display='';
+  const r=await api(`/api/clients?group_id=${gid}`);if(r?.status!=='success')return;
+  document.getElementById('aiPickList').innerHTML=r.data.map(c=>`<div style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--bg-base);border-radius:6px;margin-bottom:4px;cursor:pointer" onclick="aiTog('${c.client_id}',this)"><span class="cb-wrap" onclick="event.stopPropagation()"><span class="cb-mark"></span><input type="checkbox" class="cb-input ai-cb" data-id="${c.client_id}"></span><span style="font-size:13px">${c.hostname||c.client_id}</span><span style="font-size:11px;color:var(--text-muted);margin-left:auto">${c.local_ip||'-'}</span></div>`).join('');
+  updateAiSelectedCount();
+}
+function aiTog(id,el){if(aiPicks.has(id))aiPicks.delete(id);else aiPicks.add(id);const wrap=el.querySelector('.cb-wrap');const inp=wrap?.querySelector('.cb-input');
+  if(wrap){wrap.classList.toggle('checked',aiPicks.has(id));if(inp)inp.checked=aiPicks.has(id);}
+  updateAiSelectedCount();
+}
+function aiSelectAllHosts(){const gc=document.querySelectorAll('.ai-cb');if(aiPicks.size===gc.length){aiPicks.clear();}else{gc.forEach(cb=>aiPicks.add(cb.dataset.id));}gc.forEach(cb=>{const wrap=cb.closest('.cb-wrap');if(aiPicks.has(cb.dataset.id)){cb.checked=true;if(wrap)wrap.classList.add('checked');}else{cb.checked=false;if(wrap)wrap.classList.remove('checked');}});updateAiSelectedCount();}
+function updateAiSelectedCount(){document.getElementById('aiSelN').textContent=aiPicks.size;}
+function aiStepBack(){document.getElementById('aiStep2').style.display='none';document.getElementById('aiStep1').style.display='';document.getElementById('aiS1').classList.add('active');document.getElementById('aiS2').classList.remove('active');}
+async function confirmAddAiHosts(){
+  if(!aiPicks.size){toast('error','请选择主机');return;}
+  let ok=0;for(const id of aiPicks){const r=await api('/api/ai/hosts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({client_id:id})});if(r?.status==='success')ok++;}
+  toast('success',`添加 ${ok} 台`);closeModal('addAiModal');loadAiHosts();
+}
+
+// ===== Probe Module =====
+async function loadProbeTargets(){
+  const c=document.getElementById('probeTargetList');
+  try{
+    const r=await api('/api/probe/targets');
+    if(!r||r.status!=='success'){c.innerHTML='<div class="empty-state"><p>暂无探测目标，请点击上方添加</p></div>';return;}
+    if(!r.data||!r.data.length){c.innerHTML='<div class="empty-state"><p>暂无探测目标，请点击上方"添加探测目标"按钮</p></div>';return;}
+    let html='<table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr>';
+    html+='<th style="text-align:left;padding:10px;border-bottom:1px solid var(--border)">名称</th>';
+    html+='<th style="text-align:left;padding:10px;border-bottom:1px solid var(--border)">地址</th>';
+    html+='<th style="text-align:left;padding:10px;border-bottom:1px solid var(--border)">端口</th>';
+    html+='<th style="text-align:left;padding:10px;border-bottom:1px solid var(--border)">协议</th>';
+    html+='<th style="text-align:left;padding:10px;border-bottom:1px solid var(--border)">状态</th>';
+    html+='<th style="text-align:left;padding:10px;border-bottom:1px solid var(--border)">响应时间</th>';
+    html+='<th style="text-align:left;padding:10px;border-bottom:1px solid var(--border)">最后探测</th>';
+    html+='<th style="text-align:left;padding:10px;border-bottom:1px solid var(--border)">操作</th></tr></thead><tbody>';
+    r.data.forEach(t=>{
+      const sc=t.last_status==='online'?'var(--accent)':t.last_status==='offline'?'var(--danger)':'var(--text-muted)';
+      const st=t.last_status==='online'?'在线':t.last_status==='offline'?'离线':'未知';
+      html+=`<tr><td style="padding:8px 10px;border-bottom:1px solid var(--border)">${t.name}</td><td style="padding:8px 10px;border-bottom:1px solid var(--border);font-family:'Consolas','Courier New',monospace;font-size:12px">${t.host}</td><td style="padding:8px 10px;border-bottom:1px solid var(--border)">${t.port}</td><td style="padding:8px 10px;border-bottom:1px solid var(--border)">${t.protocol}</td><td style="padding:8px 10px;border-bottom:1px solid var(--border)"><span style="color:${sc};font-weight:600">${st}</span></td><td style="padding:8px 10px;border-bottom:1px solid var(--border)">${t.last_response_time?t.last_response_time+'ms':'-'}</td><td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px">${fmtDt(t.last_probe_time)}</td><td style="padding:8px 10px;border-bottom:1px solid var(--border)"><button class="btn btn-info btn-small" onclick="editProbeTarget(${t.id},'${t.name}','${t.host}',${t.port},'${t.protocol}','${t.path||'/'}','${t.description||''}')">编辑</button> <button class="btn btn-secondary btn-small" onclick="testProbeTarget(${t.id})">测试</button> <button class="btn btn-danger btn-small" onclick="deleteProbeTarget(${t.id})">删除</button></td></tr>`;
+    });
+    html+='</tbody></table>';c.innerHTML=html;
+  }catch(e){c.innerHTML='<div class="empty-state"><p>加载失败</p></div>';}
+}
+
+async function loadProbeAlerts(){
+  const c=document.getElementById('probeAlertList');
+  try{
+    const r=await api('/api/probe/alerts?per_page=50');
+    if(!r||r.status!=='success'){c.innerHTML='<div class="empty-state"><p>暂无探测告警</p></div>';return;}
+    document.getElementById('probeAlertN').textContent=r.pagination?.total||0;
+    if(!r.data||!r.data.length){c.innerHTML='<div class="empty-state"><p>暂无探测告警</p></div>';return;}
+    let html='';
+    r.data.forEach(a=>{
+      html+=`<div class="alert-item ${a.resolved?'info':'critical'}"><span class="cb-wrap" onclick="var i=this.querySelector('.cb-input');i.checked=!i.checked;syncCb(this);updateProbeAlertSelected()"><span class="cb-mark"></span><input type="checkbox" class="cb-input probe-alert-cb" data-id="${a.id}"></span><div class="alert-icon" style="font-size:12px;font-weight:700">${a.resolved?'&#10003;':'!'}</div><div style="flex:1"><div class="alert-text"><strong>${a.target_name||''}</strong> (${a.target_host||''}) - ${a.alert_type==='offline'?'离线':'异常'} ${a.error_message?'('+a.error_message+')':''}</div><div class="alert-time">${fmtDt(a.created_at)}</div></div><div style="display:flex;gap:4px">${!a.resolved?`<button class="btn btn-secondary btn-small" onclick="resolveProbeAlert(${a.id})">标记已处理</button>`:''}<button class="btn btn-danger btn-small" onclick="deleteProbeAlert(${a.id})">删除</button></div></div>`;
+    });
+    c.innerHTML=html;
+  }catch(e){c.innerHTML='<div class="empty-state"><p>加载失败</p></div>';}
+}
+
+let selectedProbeAlertIds=new Set();
+function updateProbeAlertSelected(){
+  selectedProbeAlertIds.clear();
+  document.querySelectorAll('#probeAlertList .probe-alert-cb:checked').forEach(cb=>{selectedProbeAlertIds.add(parseInt(cb.dataset.id));});
+  document.getElementById('probeAlertSelectedCount').textContent=`已选 ${selectedProbeAlertIds.size} 项`;
+  const allCbs=document.querySelectorAll('#probeAlertList .probe-alert-cb');
+  const selectAllCb=document.getElementById('selectAllProbeAlerts');
+  const selectAllWrap=selectAllCb?.closest('.cb-wrap');
+  if(selectAllCb&&allCbs.length>0){
+    const allChecked=selectedProbeAlertIds.size===allCbs.length;
+    selectAllCb.checked=allChecked;
+    if(selectAllWrap)selectAllWrap.classList.toggle('checked',allChecked);
+  }
+}
+function toggleSelectAllProbeAlerts(checked){
+  document.querySelectorAll('#probeAlertList .probe-alert-cb').forEach(cb=>{
+    cb.checked=checked;
+    const wrap=cb.closest('.cb-wrap');if(wrap)wrap.classList.toggle('checked',checked);
+    if(checked)selectedProbeAlertIds.add(parseInt(cb.dataset.id));
+    else selectedProbeAlertIds.delete(parseInt(cb.dataset.id));
+  });
+  document.getElementById('probeAlertSelectedCount').textContent=`已选 ${selectedProbeAlertIds.size} 项`;
+}
+async function deleteSelectedProbeAlerts(){
+  if(!selectedProbeAlertIds.size){toast('info','请先选择要删除的告警');return;}
+  if(!confirm(`确定删除 ${selectedProbeAlertIds.size} 条告警记录?`))return;
+  let ok=0;
+  for(const id of selectedProbeAlertIds){
+    const r=await api(`/api/probe/alerts/${id}`,{method:'DELETE'});
+    if(r?.status==='success')ok++;
+  }
+  toast('success',`已删除 ${ok} 条告警`);
+  selectedProbeAlertIds.clear();
+  loadProbeAlerts();
+}
+
+function showAddProbeModal(){
+  document.getElementById('addProbeModal').classList.add('active');
+  document.getElementById('probeType').value='ping';
+  onProbeTypeChange();
+  // 初始化分组下拉框
+  const sel=document.getElementById('probeGroup');
+  if(sel)sel.innerHTML='<option value="">未分组</option>'+groupsData.map(g=>`<option value="${g.id}">${g.name}</option>`).join('');
+}
+function onProbeTypeChange(){const t=document.getElementById('probeType').value;document.getElementById('probeHttpOpts').style.display=t==='http'?'':'none';document.getElementById('probeTcpOpts').style.display=t==='tcp'?'':'none';}
+function onEditProbeTypeChange(){const t=document.getElementById('editProbeType').value;document.getElementById('editProbeHttpOpts').style.display=t==='http'?'':'none';document.getElementById('editProbeTcpOpts').style.display=t==='tcp'?'':'none';}
+
+async function addProbeTarget(){
+  const name=document.getElementById('probeName').value.trim();const host=document.getElementById('probeHost').value.trim();
+  if(!name||!host){toast('error','名称和地址必填');return;}
+  const pt=document.getElementById('probeType').value;let port=80,protocol='tcp',path='/';
+  if(pt==='ping'){port=0;protocol='ping';}
+  else if(pt==='http'){protocol=document.getElementById('probeProtocol').value;port=parseInt(document.getElementById('probePort').value)||80;path=document.getElementById('probePath').value||'/';}
+  else if(pt==='tcp'){port=parseInt(document.getElementById('probeTcpPort').value)||8080;protocol='tcp';}
+  const groupId=document.getElementById('probeGroup').value||null;
+  const r=await api('/api/probe/targets',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,host,port,protocol,path,description:document.getElementById('probeDesc').value,group_id:groupId?parseInt(groupId):null})});
+  if(r?.status==='success'){toast('success','添加成功');closeModal('addProbeModal');loadProbeTargets();}else toast('error',r?.error||'添加失败');
+}
+
+async function testProbeTarget(id){toast('info','测试中...');const r=await api(`/api/probe/targets/${id}/test`,{method:'POST'});if(r?.status==='success'){const res=r.result;toast(res.status==='online'?'success':'error',`状态: ${res.status} ${res.response_time?'响应: '+res.response_time+'ms':''} ${res.error||''}`);loadProbeTargets();}else toast('error','测试失败');}
+async function deleteProbeTarget(id){if(!confirm('确定删除?'))return;const r=await api(`/api/probe/targets/${id}`,{method:'DELETE'});if(r?.status==='success'){toast('success','已删除');loadProbeTargets();}else toast('error','删除失败');}
+async function resolveProbeAlert(id){const r=await api(`/api/probe/alerts/${id}/resolve`,{method:'PUT'});if(r?.status==='success'){toast('success','已处理');loadProbeAlerts();}else toast('error','操作失败');}
+async function deleteProbeAlert(id){if(!confirm('确定删除此告警记录?'))return;const r=await api(`/api/probe/alerts/${id}`,{method:'DELETE'});if(r?.status==='success'){toast('success','已删除');loadProbeAlerts();}else toast('error','删除失败');}
+
+let curEditProbeId=null;
+function editProbeTarget(id,name,host,port,protocol,path,description,groupId){
+  curEditProbeId=id;
+  document.getElementById('editProbeName').value=name;
+  document.getElementById('editProbeHost').value=host;
+  document.getElementById('editProbePort').value=port;
+  document.getElementById('editProbePath').value=path||'/';
+  document.getElementById('editProbeDesc').value=description||'';
+  document.getElementById('editProbeType').value=protocol==='ping'?'ping':protocol==='tcp'?'tcp':'http';
+  // 初始化分组下拉框并设置当前值
+  const sel=document.getElementById('editProbeGroup');
+  if(sel){
+    sel.innerHTML='<option value="">未分组</option>'+groupsData.map(g=>`<option value="${g.id}">${g.name}</option>`).join('');
+    sel.value=groupId||'';
+  }
+  document.getElementById('editProbeModal').classList.add('active');
+}
+
+async function saveEditProbeTarget(){
+  const name=document.getElementById('editProbeName').value.trim();
+  const host=document.getElementById('editProbeHost').value.trim();
+  if(!name||!host){toast('error','名称和地址必填');return;}
+  const pt=document.getElementById('editProbeType').value;
+  let port=80,protocol='tcp',path='/';
+  if(pt==='ping'){port=0;protocol='ping';}
+  else if(pt==='http'){protocol='http';port=parseInt(document.getElementById('editProbePort').value)||80;path=document.getElementById('editProbePath').value||'/';}
+  else if(pt==='tcp'){port=parseInt(document.getElementById('editProbePort').value)||8080;protocol='tcp';}
+  const groupId=document.getElementById('editProbeGroup').value||null;
+  const r=await api(`/api/probe/targets/${curEditProbeId}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,host,port,protocol,path,description:document.getElementById('editProbeDesc').value,enabled:true,group_id:groupId?parseInt(groupId):null})});
+  if(r?.status==='success'){toast('success','修改成功');closeModal('editProbeModal');loadProbeTargets();}else toast('error',r?.error||'修改失败');
+}
+async function resolveProbeAlert(id){const r=await api(`/api/probe/alerts/${id}/resolve`,{method:'PUT'});if(r?.status==='success'){toast('success','已处理');loadProbeAlerts();}}
+async function batchResolveProbeAlerts(){const items=document.querySelectorAll('#probeAlertList .alert-item:not(.info)');if(!items.length){toast('info','没有未处理的告警');return;}toast('info','批量处理中...');let ids=[];items.forEach(el=>{const bid=el.getAttribute('data-alert-id');if(bid)ids.push(parseInt(bid));});if(!ids.length)ids=Array.from(items).map((_,i)=>i+1);const r=await api('/api/probe/alerts/batch-resolve',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids})});if(r?.status==='success'){toast('success','处理完成');loadProbeAlerts();}else toast('error','操作失败');}
+
+// ===== AI Config =====
+async function fetchModels(){
+  const baseUrl=document.getElementById('aiUrl').value.trim();const apiKey=document.getElementById('aiKey').value.trim();
+  if(!baseUrl||!apiKey){toast('error','请先填写 API 地址和 Key');return;}
+  toast('info','获取模型列表...');
+  try{
+    const r=await api('/api/ai/config/models',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({api_base_url:baseUrl,api_key:apiKey})});
+    if(r?.status!=='success'){toast('error',r?.error||'获取失败');return;}
+    const models=r.models||[];if(!models.length){toast('error','未获取到模型列表');return;}
+    const sel=prompt('选择模型（输入序号或名称）:\n'+models.map((m,i)=>`${i+1}. ${m}`).join('\n'));
+    if(!sel)return;
+    if(/^\d+$/.test(sel)&&parseInt(sel)>=1&&parseInt(sel)<=models.length){document.getElementById('aiModel').value=models[parseInt(sel)-1];}
+    else{document.getElementById('aiModel').value=sel;}
+    toast('success','模型已设置: '+document.getElementById('aiModel').value);
+  }catch(e){toast('error','获取失败: '+e.message);}
+}
+
+async function manualAnalyzeAll(){
+  toast('info','获取未分析的告警...');
+  try{
+    const r=await api('/api/process-alerts?per_page=100');if(r?.status!=='success'){toast('error','获取失败');return;}
+    const unanalyzed=(r.data||[]).filter(a=>!a.ai_analyzed&&!a.resolved);
+    if(!unanalyzed.length){toast('info','没有待分析的告警');return;}
+    toast('info',`正在分析 ${unanalyzed.length} 条告警...`);
+    let ok=0,fail=0;
+    for(const a of unanalyzed){try{const res=await api(`/api/process-alerts/${a.id}/reanalyze`,{method:'POST'});if(res?.status==='success')ok++;else fail++;}catch(e){fail++;}}
+    toast('success',`分析完成: ${ok} 成功, ${fail} 失败`);loadAiAlerts();
+  }catch(e){toast('error','分析失败: '+e.message);}
+}
+
+// ===== Email Config =====
+async function loadEmailCfg(){const r=await api('/api/email-config');if(r?.status!=='success')return;const c=r.data;document.getElementById('smtpHost').value=c.smtp_host||'';document.getElementById('smtpPort').value=c.smtp_port||465;document.getElementById('smtpName').value=c.sender_name||'';document.getElementById('smtpUser').value=c.smtp_user||'';document.getElementById('smtpPass').value='';document.getElementById('smtpTo').value=Array.isArray(c.recipients)?c.recipients.join(', '):'';document.getElementById('smtpOn').checked=!!c.enabled;}
+async function saveEmail(){const r=await api('/api/email-config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({smtp_host:document.getElementById('smtpHost').value,smtp_port:parseInt(document.getElementById('smtpPort').value),sender_name:document.getElementById('smtpName').value,smtp_user:document.getElementById('smtpUser').value,smtp_password:document.getElementById('smtpPass').value,recipients:document.getElementById('smtpTo').value.split(',').map(s=>s.trim()).filter(Boolean),enabled:document.getElementById('smtpOn').checked})});toast(r?.status==='success'?'success':'error',r?.message||r?.error||'保存失败');}
+
+// ===== Alert Config =====
+async function loadAlertCfg(){
+  const r=await api('/api/alert-settings');if(r?.status!=='success')return;
+  const c=r.data;
+  document.getElementById('acAlertOn').checked=!!c.alert_enabled;
+  document.getElementById('acEmailOn').checked=!!c.email_enabled;
+  // 生成硬件监控复选框
+  const grid=document.getElementById('hwMonGrid');
+  const hwTypes=[
+    {key:'monitor_cpu',label:'CPU'},
+    {key:'monitor_gpu',label:'显卡'},
+    {key:'monitor_memory',label:'内存'},
+    {key:'monitor_disk',label:'硬盘'},
+    {key:'monitor_network',label:'网卡'},
+    {key:'monitor_motherboard',label:'主板'},
+    {key:'monitor_bios',label:'BIOS'},
+    {key:'monitor_temperature',label:'温度传感器'},
+    {key:'monitor_fan',label:'风扇'},
+    {key:'monitor_voltage',label:'电压'}
+  ];
+  grid.innerHTML=hwTypes.map(h=>`<label class="switch-wrap"><input type="checkbox" id="${h.key}" ${c[h.key]?'checked':''}><span>${h.label}</span></label>`).join('');
+}
+async function saveAlertCfg(){
+  const hwTypes=['monitor_cpu','monitor_gpu','monitor_memory','monitor_disk','monitor_network','monitor_motherboard','monitor_bios','monitor_temperature','monitor_fan','monitor_voltage'];
+  const data={alert_enabled:document.getElementById('acAlertOn').checked?1:0,email_enabled:document.getElementById('acEmailOn').checked?1:0};
+  hwTypes.forEach(k=>{data[k]=document.getElementById(k)?.checked?1:0;});
+  const r=await api('/api/alert-settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+  toast(r?.status==='success'?'success':'error',r?.message||r?.error||'保存失败');
+}
+async function resetAlertCfg(){
+  if(!confirm('确定恢复默认设置?'))return;
+  const data={alert_enabled:1,email_enabled:0,monitor_cpu:1,monitor_gpu:1,monitor_memory:1,monitor_disk:1,monitor_network:0,monitor_motherboard:0,monitor_bios:0,monitor_temperature:0,monitor_fan:0,monitor_voltage:0};
+  const r=await api('/api/alert-settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+  if(r?.status==='success'){toast('success','已恢复默认');loadAlertCfg();}else toast('error','恢复失败');
+}
+
+
+
+// ===== Utility =====
+function closeModal(id){document.getElementById(id).classList.remove('active');}
+function parseServerDate(s){
+  if(!s)return null;
+  let t=String(s).replace(' ','T');
+  t=t.replace(/[+-]\d{2}:\d{2}|Z$/,'');
+  t=t.replace(/\.\d+$/,'');
+  const p=t.match(/(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
+  return p?new Date(p[1],p[2]-1,p[3],p[4],p[5],p[6]):new Date(s);
+}
+
+// ===== Theme =====
+function toggleTheme(){const isLight=document.documentElement.getAttribute('data-theme')==='light';document.documentElement.setAttribute('data-theme',isLight?'':'light');try{const icon=document.getElementById('themeIcon');const label=document.getElementById('themeLabel');if(icon)icon.textContent=isLight?'☀':'☾';if(label)label.textContent=isLight?'亮色模式':'暗色模式';}catch(e){}try{localStorage.setItem('hwmon-theme',isLight?'dark':'light');}catch(e){}}
+(function(){try{const t=localStorage.getItem('hwmon-theme');if(t==='light')document.documentElement.setAttribute('data-theme','light');}catch(e){}})();
+
+// ===== Alert Badge =====
+async function updateAlertBadge(){try{const r=await api('/api/dashboard');if(r?.status==='success'&&r.data){document.getElementById('navAlertCount').textContent=(r.data.unresolved_alerts||0)+(r.data.process_alerts||0)+(r.data.probe_alerts||0);}}catch(e){}}
+
+// ===== Smart Polling =====
+let lastUpdate = {};
+let pollInterval = 60000;
+let isTabActive = true;
+let pollTimer = null;
+
+// 页面可见性检测
+document.addEventListener('visibilitychange', () => {
+    isTabActive = !document.hidden;
+    if (isTabActive && document.getElementById('mainApp').classList.contains('active')) {
+        loadAll();  // 页面重新可见时立即刷新
+    }
+});
+
+// 智能轮询函数
+async function smartPoll() {
+    if (!isTabActive || !document.getElementById('mainApp').classList.contains('active')) {
+        return;
+    }
+
+    try {
+        await Promise.all([
+            loadDashboard(),
+            updateAlertBadge()
+        ]);
+    } catch (e) {
+        console.error('Poll error:', e);
+    }
+}
+
+// 启动智能轮询
+function startSmartPoll() {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(smartPoll, pollInterval);
+}
+
+// ===== Init =====
+checkLogin();
+startSmartPoll();
+</script>
 </body>
 </html>
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           

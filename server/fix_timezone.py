@@ -2,16 +2,17 @@
 修复MySQL数据库中错误的时间数据
 将2026年的错误时间修正为正确的当前时间
 """
+import os
 import pymysql
 from datetime import datetime, timedelta
 
-# MySQL配置
+# MySQL配置（优先从环境变量读取）
 MYSQL_CONFIG = {
-    'host': '192.168.20.17',
-    'port': 3306,
-    'user': 'HwMon',
-    'password': 'kk7cy7SDWDMXC5XQ',
-    'database': 'hwmon',
+    'host': os.environ.get('DB_HOST', '192.168.20.17'),
+    'port': int(os.environ.get('DB_PORT', 3306)),
+    'user': os.environ.get('DB_USER', 'HwMon'),
+    'password': os.environ.get('DB_PASSWORD', ''),
+    'database': os.environ.get('DB_NAME', 'hwmon'),
     'charset': 'utf8mb4'
 }
 

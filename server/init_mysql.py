@@ -2,14 +2,15 @@
 初始化MySQL数据库
 创建数据库和表结构
 """
+import os
 import pymysql
 
-# MySQL配置
+# MySQL配置（优先从环境变量读取）
 MYSQL_CONFIG = {
-    'host': '192.168.20.17',
-    'port': 3306,
-    'user': 'HwMon',
-    'password': 'kk7cy7SDWDMXC5XQ',
+    'host': os.environ.get('DB_HOST', '192.168.20.17'),
+    'port': int(os.environ.get('DB_PORT', 3306)),
+    'user': os.environ.get('DB_USER', 'HwMon'),
+    'password': os.environ.get('DB_PASSWORD', ''),
     'charset': 'utf8mb4'
 }
 

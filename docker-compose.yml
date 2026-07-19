@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  # Flask 应用
+  hwmon:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: hwmon-server
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    environment:
+      - DB_HOST=192.168.20.27
+      - DB_PORT=3306
+      - DB_USER=hwmon
+      - DB_PASSWORD=hwmon
+      - DB_NAME=hwmon
+      - REDIS_HOST=192.168.20.27
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=redis_S5RBDd
+      - LOGIN_USERNAME=admin
+      - LOGIN_PASSWORD=admin123
+      - SECRET_KEY=hwmon-secret-key-2026
+    networks:
+      - hwmon-network
+
+networks:
+  hwmon-network:
+    driver: bridge
