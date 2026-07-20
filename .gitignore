@@ -4,6 +4,7 @@ __pycache__/
 *$py.class
 *.pyo
 *.spec
+.venv/
 
 # Build outputs
 dist/
@@ -28,6 +29,8 @@ server.log
 
 # Deploy packages (generated, not source)
 deploy_package/
+deploy/
+release/
 
 # Config files with secrets
 config.json
@@ -35,3 +38,58 @@ config.json
 
 # Temp files
 *.tmp
+
+# Server static (empty)
+server/static/
+
+# Old docs (keep only README.md)
+DEPLOY.md
+DEPLOY_STATUS.md
+PACKAGING_COMPLETE.md
+UPDATE_NOTES.md
+hw系统*.md
+开发需求文档.md
+源码级优化建议.md
+部署指南.txt
+项目文档.md
+项目架构理解.md
+项目源码分析.md
+server/CHANGELOG_*.md
+server/README_*.md
+server/代码审查回应.md
+server/升级说明*.md
+server/告警*.md
+server/安全*.md
+server/性能优化*.md
+server/打包指南.md
+server/登录*.md
+server/部署*.md
+server/fast打包.bat
+
+# Build scripts (not needed in repo)
+build.sh
+build_all.bat
+build_all.py
+cleanup_db.py
+client/build_deb.sh
+client/build_exe.py
+client/deploy.bat
+client/diagnose.py
+client/fix_firewall.bat
+client/install.bat
+client/install.sh
+server/build_deb.sh
+server/build_exe.py
+server/deploy.bat
+server/快速打包.bat
+server/auto_fix_time.py
+server/fix_timezone.py
+server/init_mysql.py
+server/migrate_to_mysql.py
+
+# Test files
+server/test_*.py
+server/tests/
+
+# Old version files
+server/app_v5.py
