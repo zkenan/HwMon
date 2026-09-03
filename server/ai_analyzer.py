@@ -82,7 +82,7 @@ def analyze_process_alert(alert_data, ai_config):
     }
 
     try:
-        response = requests.post(url, json=payload, headers=headers, timeout=60)
+        response = requests.post(url, json=payload, headers=headers, timeout=300)
         response.raise_for_status()
 
         result = response.json()
@@ -136,11 +136,11 @@ def test_ai_connection(ai_config):
         "messages": [
             {"role": "user", "content": "回复OK两个字"}
         ],
-        "max_tokens": 10
+        "max_tokens": 64
     }
 
     try:
-        response = requests.post(url, json=payload, headers=headers, timeout=30)
+        response = requests.post(url, json=payload, headers=headers, timeout=120)
         response.raise_for_status()
         result = response.json()
         content = result["choices"][0]["message"]["content"]

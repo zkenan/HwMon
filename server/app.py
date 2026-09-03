@@ -234,8 +234,17 @@ COLLECT_CONFIG = {
 
 # 硬件变更检测线程池（异步执行，不阻塞主流程）
 hw_detection_executor = ThreadPoolExecutor(
-    max_workers=20,  # 20个并发检测线程
+    max_workers=50,  # 50个并发检测线程（提升并发，避免上报集中时堆积）
     thread_name_prefix='hw_detect'
+)
+
+# 硬件检测任务有界信号量：防止极端情况下检测任务无界堆积导致内存上涨
+_detection_semaphore = threading.BoundedSemaphore(200)
+
+# AI 研判专用线程池（与硬件检测分离，避免 25s+ 的 AI 调用长时间占用检测线程）
+ai_executor = ThreadPoolExecutor(
+    max_workers=5,
+    thread_name_prefix='ai_analyze'
 )
 
 
@@ -249,7 +258,7 @@ def init_db_pool():
         maxcached=80,           # 最多缓存80个空闲连接
         maxusage=300,           # 每个连接使用300次后回收（更频繁刷新）
         blocking=False,         # 连接池满时不阻塞，快速失败
-        ping=1,                 # 连接时检查连接是否可用
+        ping=0,                 # 关闭每次取连接前的 ping 探测，省一次往返（断连由 get_db 重试兜底）
         **MYSQL_CONFIG
     )
     print("MySQL连接池初始化成功（配置：max=300, min=30, cache=80）")
@@ -276,14 +285,17 @@ def get_db():
 
 
 def get_db_readonly():
-    """获取只读数据库连接（用于查询操作，避免锁冲突）"""
+    """获取只读数据库连接（用于查询操作，避免锁冲突）
+
+    说明：InnoDB 普通 SELECT 本身是快照读、不阻塞写，
+    故不再额外执行 SET SESSION TRANSACTION READ ONLY（省一次往返）。
+    """
     max_retries = 3
     for attempt in range(max_retries):
         try:
             conn = db_pool.connection()
             cursor = conn.cursor()
             cursor.execute("SET time_zone='+08:00'")
-            cursor.execute("SET SESSION TRANSACTION READ ONLY")
             return conn
         except Exception as e:
             if attempt < max_retries - 1:
@@ -410,6 +422,35 @@ def init_tables():
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         ''')
 
+        # 数据库迁移：client_baselines 增加「手动基准」字段
+        #   selected_items   TEXT(JSON) 勾选纳入对比的条目 key 列表（按硬件类型分组）
+        #   manual_overrides TEXT(JSON) 手动覆盖字段值（item_key -> {field: value}），优先级最高
+        #   baseline_mode    VARCHAR     auto=自动全量 / manual=手动选择
+        try:
+            baseline_cols = [
+                ('selected_items', "ALTER TABLE client_baselines ADD COLUMN selected_items TEXT"),
+                ('manual_overrides', "ALTER TABLE client_baselines ADD COLUMN manual_overrides TEXT"),
+                ('baseline_mode', "ALTER TABLE client_baselines ADD COLUMN baseline_mode VARCHAR(20) DEFAULT 'auto'"),
+            ]
+            for col_name, ddl in baseline_cols:
+                cursor.execute(f"SHOW COLUMNS FROM client_baselines LIKE '{col_name}'")
+                if not cursor.fetchone():
+                    print(f'[INFO] 正在迁移数据库：添加 client_baselines.{col_name} 字段')
+                    cursor.execute(ddl)
+            conn.commit()
+        except Exception as e:
+            print(f'[WARN] client_baselines 手动基准字段迁移失败: {e}')
+
+        # 创建 CPU 真实型号映射表（手动映射：占位 CPU 底层名 -> 真实型号）
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS cpu_name_map (
+                client_id VARCHAR(255) PRIMARY KEY,
+                cpu_real_name VARCHAR(255) NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                FOREIGN KEY (client_id) REFERENCES clients(client_id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        ''')
+
         # 创建告警记录表
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS alert_records (
@@ -519,6 +560,12 @@ def init_tables():
             if not cursor.fetchone():
                 print('[INFO] 正在添加告警记录表复合索引')
                 cursor.execute("ALTER TABLE alert_records ADD INDEX idx_created_resolved (created_at DESC, resolved)")
+            
+            # 检查 alert_records 表的去重查询复合索引（优化硬件变更去重）
+            cursor.execute("SHOW INDEX FROM alert_records WHERE Key_name = 'idx_client_resolved_type'")
+            if not cursor.fetchone():
+                print('[INFO] 正在添加告警去重复合索引')
+                cursor.execute("ALTER TABLE alert_records ADD INDEX idx_client_resolved_type (client_id, resolved, alert_type)")
             
             conn.commit()
             print('[INFO] 数据库索引迁移完成')
@@ -654,7 +701,25 @@ def login_required(f):
 
 # ==================== 硬件变更检测与邮件告警 ====================
 
-def compare_hardware(baseline_snapshots, new_hardware, alert_settings=None):
+def _parse_json_field(value):
+    """安全解析 JSON 字段（可能是 None / str / 已解析的 dict/list）。
+
+    返回 dict/list，解析失败或空值返回 None。
+    """
+    if value is None or value == '':
+        return None
+    if isinstance(value, (dict, list)):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, (dict, list)) else None
+        except (json.JSONDecodeError, TypeError):
+            return None
+    return None
+
+
+def compare_hardware(baseline_snapshots, new_hardware, alert_settings=None, manual_config=None):
     """
     智能硬件变更检测
 
@@ -667,6 +732,9 @@ def compare_hardware(baseline_snapshots, new_hardware, alert_settings=None):
     baseline_snapshots: 基准快照 {'cpu': JSON, 'gpu': JSON, 'memory': JSON, 'disk': JSON}
     new_hardware: 新的硬件信息dict
     alert_settings: 告警设置dict
+    manual_config: 手动基准配置 {'selected_items': {...}, 'manual_overrides': {...}}；
+                   前者是勾选纳入的条目 key（按硬件类型分组），后者是手动字段覆盖。
+                   None 表示自动全量（等价旧行为）。
 
     返回: {
         'changes': [...],           # 需要告警的变更
@@ -674,11 +742,17 @@ def compare_hardware(baseline_snapshots, new_hardware, alert_settings=None):
         'should_alert': bool        # 是否需要告警
     }
     """
-    from compare_engine import compare_items, should_trigger_alert
+    from compare_engine import compare_items, should_trigger_alert, apply_manual_baseline
+
+    # 解析手动基准配置（缺省安全默认）
+    selected_map = (manual_config or {}).get('selected_items') or {}
+    override_map = (manual_config or {}).get('manual_overrides') or {}
 
     result = {
-        'changes': [],      # 需要告警的变更（丢失、降级）
-        'upgrades': [],     # 升级（仅记录）
+        'changes': [],        # 需要即时告警的变更（仅降级）
+        'upgrades': [],       # 升级（仅记录）
+        'empty_changes': [],  # 丢失待确认（空集合 + 数量减少，需连续计数才告警）
+        'empty_types': [],    # 本次存在丢失待确认的硬件类型
         'should_alert': False
     }
 
@@ -724,18 +798,65 @@ def compare_hardware(baseline_snapshots, new_hardware, alert_settings=None):
 
         # 使用智能对比引擎
         if baseline_items or new_items:
+            # 手动基准：先按勾选项过滤 + 手动值覆盖，再对比（优先级最高）
+            # 注意：空列表是有效配置（该类型全部取消勾选=整体不监控），
+            # 只有 None 才表示该类型未配置（=全量对比，向后兼容）
+            hw_selected = selected_map.get(hw_key)
+            hw_overrides = override_map.get(hw_key)
+            if hw_selected is not None or hw_overrides:
+                baseline_items = apply_manual_baseline(
+                    baseline_items, hw_key,
+                    selected_keys=hw_selected,
+                    manual_overrides=hw_overrides if hw_overrides else None,
+                )
+
             compare_result = compare_items(baseline_items, new_items, hw_key)
 
-            # 处理丢失（高重要性）
-            for item in compare_result.get('lost', []):
-                result['changes'].append({
-                    'type': hw_key,
-                    'label': hw_label,
-                    'change_type': 'lost',
-                    'item': item.get('item', ''),
-                    'count': item.get('count', 1),
-                    'message': item.get('message', f'{hw_label}丢失')
-                })
+            # GPU 占位状态抑制丢失告警：本次上报存在占位显卡（=独显驱动
+            # 尚未加载完成），此时 GPU 的「丢失」判定暂缓，避免把"驱动未就绪"
+            # 误判成"独显被盗"。驱动加载、占位显卡消失后自动恢复对比。
+            if hw_key == 'gpu' and compare_result.get('gpu_placeholder'):
+                for item in compare_result.get('upgraded', []):
+                    result['upgrades'].append({
+                        'type': hw_key,
+                        'label': hw_label,
+                        'change_type': 'upgraded',
+                        'item': item.get('item', ''),
+                        'dimension': item.get('dimension', ''),
+                        'old': item.get('old', ''),
+                        'new': item.get('new', ''),
+                        'message': item.get('message', f'{hw_label}升级')
+                    })
+                continue
+
+            # 空采集（基准有但本次采集为空）：把丢失候选放入 empty_changes，
+            # 交由上层按「连续 N 次空采集」策略决定是否告警（方案 A）
+            if compare_result.get('empty'):
+                result['empty_types'].append(hw_key)
+                for item in compare_result.get('lost', []):
+                    result['empty_changes'].append({
+                        'type': hw_key,
+                        'label': hw_label,
+                        'change_type': 'lost',
+                        'item': item.get('item', ''),
+                        'count': item.get('count', 1),
+                        'message': item.get('message', f'{hw_label}丢失')
+                    })
+                continue
+
+            # 处理丢失（数量减少）—— 与空集合一样纳入「连续 N 次确认」，
+            # 抑制采集抖动导致的 key 不匹配/偶发少采误报（根因 B）
+            if compare_result.get('lost'):
+                result['empty_types'].append(hw_key)
+                for item in compare_result.get('lost', []):
+                    result['empty_changes'].append({
+                        'type': hw_key,
+                        'label': hw_label,
+                        'change_type': 'lost',
+                        'item': item.get('item', ''),
+                        'count': item.get('count', 1),
+                        'message': item.get('message', f'{hw_label}丢失')
+                    })
 
             # 处理降级（中重要性降值）
             for item in compare_result.get('downgraded', []):
@@ -763,8 +884,8 @@ def compare_hardware(baseline_snapshots, new_hardware, alert_settings=None):
                     'message': item.get('message', f'{hw_label}升级')
                 })
 
-    # 判断是否需要告警
-    result['should_alert'] = bool(result['changes'])
+    # 判断是否需要告警（丢失待确认也算，尽管最终由连续计数决定是否入库）
+    result['should_alert'] = bool(result['changes']) or bool(result['empty_changes'])
 
     return result
 
@@ -843,6 +964,36 @@ def send_alert_email(client_id, hostname, local_ip, changes):
         return False
 
 
+# =================================================================
+# 丢失连续计数（方案 A 扩展：抑制采集抖动导致的误报）
+# 客户端每 120 秒上报一次。两类「丢失」不应立即告警，需连续确认：
+#   1) 空集合：某类硬件采集偶发为空（如无独显机器的 Microsoft Basic
+#      Display Adapter 时有时无）；
+#   2) 数量减少：采集字段格式变化导致 baseline 与上报 key 不匹配
+#      （如 CPU name 从 WMI 友好名变为底层名），被误判「丢了 N 个」。
+# 仅当连续 EMPTY_THRESHOLD 次均丢失才判定并告警；任一次恢复即清零。
+# =================================================================
+EMPTY_THRESHOLD = 3
+_empty_collect_state = {}      # {client_id: {hw_key: consecutive_loss_count}}
+_empty_collect_lock = threading.Lock()
+
+
+def _bump_empty_count(client_id, hw_key):
+    """递增丢失计数，返回是否达到告警阈值。"""
+    with _empty_collect_lock:
+        client_state = _empty_collect_state.setdefault(client_id, {})
+        client_state[hw_key] = client_state.get(hw_key, 0) + 1
+        return client_state[hw_key] >= EMPTY_THRESHOLD
+
+
+def _reset_empty_count(client_id, hw_key):
+    """采集恢复正常，清零对应类型的丢失计数。"""
+    with _empty_collect_lock:
+        client_state = _empty_collect_state.get(client_id)
+        if client_state:
+            client_state[hw_key] = 0
+
+
 def _check_hardware_changes(cursor, conn, client_id, hostname, local_ip, hardware_info,
                             cpu_info, gpu_info, mem_info, disk_info):
     """检查硬件变更（智能对比版本）"""
@@ -873,36 +1024,76 @@ def _check_hardware_changes(cursor, conn, client_id, hostname, local_ip, hardwar
                 'disk': baseline['disk_snapshot'],
             }
 
+            # 读取手动基准配置（勾选项 + 手动覆盖），随 baseline 一起生效
+            manual_config = None
+            try:
+                if baseline.get('baseline_mode') == 'manual':
+                    manual_config = {
+                        'selected_items': _parse_json_field(baseline.get('selected_items')),
+                        'manual_overrides': _parse_json_field(baseline.get('manual_overrides')),
+                    }
+            except Exception as e:
+                logger.warning(f'客户端 {client_id} 手动基准配置解析失败，回退全量对比: {e}')
+
             # 使用智能对比引擎
-            compare_result = compare_hardware(baseline_snapshots, hardware_info, alert_settings)
+            compare_result = compare_hardware(baseline_snapshots, hardware_info, alert_settings, manual_config)
 
             # 记录升级信息（仅记录，不告警）
             if compare_result.get('upgrades'):
                 for upgrade in compare_result['upgrades']:
                     logger.info(f'客户端 {client_id} 升级: {upgrade.get("message", "")}')
 
-            # 处理需要告警的变更（丢失、降级）
-            if compare_result.get('should_alert'):
-                changes = compare_result['changes']
+            # ---- 丢失连续计数（方案 A 扩展：覆盖空集合 + 数量减少）----
+            # 降级（真值变化）直接进入告警候选
+            final_changes = list(compare_result.get('changes', []))
+            empty_types = compare_result.get('empty_types', [])
+            empty_changes = compare_result.get('empty_changes', [])
 
+            # 达阈值的丢失类型 → 加入告警候选；未达标仅累计不告警
+            for hw_key in empty_types:
+                if _bump_empty_count(client_id, hw_key):
+                    for ec in empty_changes:
+                        if ec.get('type') == hw_key:
+                            final_changes.append(ec)
+                    _reset_empty_count(client_id, hw_key)
+                    logger.warning(f'客户端 {client_id} {hw_key} 连续丢失达阈值，判为丢失')
+
+            # 本次无丢失的类型 → 恢复正常，清零计数
+            for hw_key in ('cpu', 'gpu', 'memory', 'disk'):
+                if hw_key not in empty_types:
+                    _reset_empty_count(client_id, hw_key)
+
+            # ---- 告警入库（含去重）----
+            if final_changes:
                 # 检查告警开关
                 if alert_settings.get('alert_enabled', 1):
-                    # 记录告警到数据库
-                    alert_detail = json.dumps(changes, ensure_ascii=False)
-                    cursor.execute('''
-                        INSERT INTO alert_records (client_id, alert_type, alert_detail)
-                        VALUES (%s, %s, %s)
-                    ''', (client_id, 'hardware_change', alert_detail))
-                    conn.commit()
+                    alert_detail = json.dumps(final_changes, ensure_ascii=False)
 
-                    logger.warning(f'客户端 {client_id} 检测到硬件变更: {len(changes)} 项')
+                    # 去重：同一客户端相同变更且未处理的告警不再重复入库
+                    cursor.execute('''
+                        SELECT id FROM alert_records
+                        WHERE client_id = %s AND alert_type = 'hardware_change'
+                          AND resolved = 0 AND alert_detail = %s
+                        LIMIT 1
+                    ''', (client_id, alert_detail))
+                    dup = cursor.fetchone()
+
+                    if dup:
+                        logger.info(f'客户端 {client_id} 存在未处理的相同告警，跳过入库（去重）')
+                    else:
+                        cursor.execute('''
+                            INSERT INTO alert_records (client_id, alert_type, alert_detail)
+                            VALUES (%s, %s, %s)
+                        ''', (client_id, 'hardware_change', alert_detail))
+                        conn.commit()
+                        logger.warning(f'客户端 {client_id} 检测到硬件变更: {len(final_changes)} 项')
                 else:
                     logger.info(f'客户端 {client_id} 检测到硬件变更，但告警已关闭，未记录')
 
                 # 检查邮件开关（独立于告警开关）
                 if alert_settings.get('email_enabled', 0):
                     try:
-                        email_sent = send_alert_email(client_id, hostname, local_ip, changes)
+                        email_sent = send_alert_email(client_id, hostname, local_ip, final_changes)
                         if email_sent:
                             logger.info(f'已向管理员发送告警邮件')
                         else:
@@ -939,6 +1130,7 @@ def _check_hardware_changes_async(client_id, hostname, local_ip, hardware_info,
                 conn.close()
             except:
                 pass
+        _detection_semaphore.release()
 
 
 # =================================================================
@@ -1157,6 +1349,9 @@ def _process_report(attempt, max_retries):
         hostname = data.get('hostname')
         hardware_info = data.get('hardware_info')
         local_ip = data.get('local_ip', '')
+        # APIPA/无效地址兜底：169.254.x.x（DHCP 失败自动地址）、回环等改用真实来源 IP
+        if not local_ip or local_ip.startswith('169.254.') or local_ip in ('127.0.0.1', '0.0.0.0', '::1'):
+            local_ip = request.remote_addr or ''
         report_type = data.get('report_type', 'scheduled')
 
         if not client_id:
@@ -1201,13 +1396,19 @@ def _process_report(attempt, max_retries):
         conn.close()
         conn = None  # 标记已关闭
 
-        # 【优化】步骤3: 硬件变更检测（异步执行，不阻塞主流程）
+        # 【优化】步骤3: 硬件变更检测（异步执行，有界队列，不阻塞主流程）
         # 提交到线程池异步执行，立即返回，不等待结果
-        hw_detection_executor.submit(
-            _check_hardware_changes_async,
-            client_id, hostname, local_ip, hardware_info,
-            cpu_info, gpu_info, mem_info, disk_info
-        )
+        if _detection_semaphore.acquire(blocking=False):
+            try:
+                hw_detection_executor.submit(
+                    _check_hardware_changes_async,
+                    client_id, hostname, local_ip, hardware_info,
+                    cpu_info, gpu_info, mem_info, disk_info
+                )
+            except Exception:
+                _detection_semaphore.release()
+        else:
+            logger.warning(f'硬件检测队列已满，跳过本次检测 {client_id}')
 
         return jsonify({'status': 'success', 'message': '接收成功'})
 
@@ -1218,51 +1419,72 @@ def _process_report(attempt, max_retries):
 @app.route('/api/clients', methods=['GET'])
 @login_required
 def get_clients():
-    """获取所有客户端列表（支持排序和过滤）"""
+    """获取所有客户端列表（支持排序、分组过滤和关键词搜索）"""
     try:
         group_id = request.args.get('group_id')
         sort_by = request.args.get('sort_by', 'last_report')  # 默认按最后上报时间排序
         order = request.args.get('order', 'desc')  # 默认降序
+        search = (request.args.get('search') or '').strip()  # 关键词搜索（主机名/ID/IP）
+
+        # 验证排序字段（提前到缓存键生成前，保证缓存键稳定）
+        valid_sort_fields = ['hostname', 'local_ip', 'group_name', 'last_report', 'created_at']
+        if sort_by not in valid_sort_fields:
+            sort_by = 'last_report'
+        # 验证排序方向
+        order = 'DESC' if order.lower() == 'desc' else 'ASC'
+
+        # 短缓存（5s）：客户端列表是高频读取热路径，命中直接返回，绕过 DB 查询。
+        # 注意：带搜索关键词时不走缓存（关键词组合千变万化，缓存命中率极低且会污染缓存）。
+        if not search:
+            cache_key = f'hwmon:clients:{group_id or "all"}:{sort_by}:{order}'
+            cached = get_cache(cache_key)
+            if cached:
+                return jsonify(cached)
+        else:
+            cache_key = None
 
         with get_db_readonly_safe() as conn:
             cursor = conn.cursor()
 
-            # 验证排序字段
-            valid_sort_fields = ['hostname', 'local_ip', 'group_name', 'last_report', 'created_at']
-            if sort_by not in valid_sort_fields:
-                sort_by = 'last_report'
-
-            # 验证排序方向
-            order = 'DESC' if order.lower() == 'desc' else 'ASC'
-
             # 构建查询
+            search_cond = ''
+            search_params = []
+            if search:
+                like = f'%{search}%'
+                search_cond = ' AND (c.hostname LIKE %s OR c.client_id LIKE %s OR c.local_ip LIKE %s)'
+                search_params = [like, like, like]
+
             if group_id == 'ungrouped':
                 cursor.execute(f'''
                     SELECT c.*, g.name as group_name
                     FROM clients c
                     LEFT JOIN `groups` g ON c.group_id = g.id
-                    WHERE c.group_id IS NULL
+                    WHERE c.group_id IS NULL{search_cond}
                     ORDER BY c.{sort_by} {order}
-                ''')
+                ''', search_params)
             elif group_id:
                 cursor.execute(f'''
                     SELECT c.*, g.name as group_name
                     FROM clients c
                     LEFT JOIN `groups` g ON c.group_id = g.id
-                    WHERE c.group_id = %s
+                    WHERE c.group_id = %s{search_cond}
                     ORDER BY c.{sort_by} {order}
-                ''', (group_id,))
+                ''', [group_id] + search_params)
             else:
                 cursor.execute(f'''
                     SELECT c.*, g.name as group_name
                     FROM clients c
                     LEFT JOIN `groups` g ON c.group_id = g.id
+                    WHERE 1=1{search_cond}
                     ORDER BY c.{sort_by} {order}
-                ''')
+                ''', search_params)
 
             clients = [dict(row) for row in cursor.fetchall()]
 
-        return jsonify({'status': 'success', 'data': clients})
+        response_data = {'status': 'success', 'data': clients}
+        if cache_key:
+            set_cache(cache_key, response_data, ttl=5)
+        return jsonify(response_data)
 
     except Exception as e:
         logger.error(f'获取客户端列表失败: {e}')
@@ -1291,6 +1513,12 @@ def get_client_detail(client_id):
 
             client_info = dict(client)
 
+            # 获取 CPU 真实型号映射（手动映射，占位 CPU 名 -> 真实型号）
+            cursor.execute('SELECT cpu_real_name FROM cpu_name_map WHERE client_id = %s', (client_id,))
+            cpu_map = cursor.fetchone()
+            if cpu_map:
+                client_info['cpu_real_name'] = cpu_map['cpu_real_name']
+
             # 获取最新的硬件报告
             cursor.execute('''
                 SELECT report_data, report_type, timestamp
@@ -1309,6 +1537,66 @@ def get_client_detail(client_id):
         return jsonify({'status': 'success', 'data': client_info})
 
     except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/cpu-names', methods=['GET'])
+@login_required
+def get_cpu_name_maps():
+    """获取所有 CPU 真实型号映射 {client_id: cpu_real_name}（手动映射）"""
+    try:
+        with get_db_readonly_safe() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT client_id, cpu_real_name FROM cpu_name_map')
+            maps = {row['client_id']: row['cpu_real_name'] for row in cursor.fetchall()}
+        return jsonify({'status': 'success', 'data': maps})
+    except Exception as e:
+        logger.error(f'获取 CPU 型号映射失败: {e}')
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/client/<client_id>/cpu-name', methods=['POST'])
+@login_required
+def set_cpu_real_name(client_id):
+    """录入/更新某台机器的 CPU 真实型号（手动映射）"""
+    try:
+        data = request.json or {}
+        cpu_real_name = (data.get('cpu_real_name') or '').strip()
+        if not cpu_real_name:
+            return jsonify({'error': 'CPU 型号不能为空'}), 400
+
+        with get_db_safe() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT client_id FROM clients WHERE client_id = %s', (client_id,))
+            if not cursor.fetchone():
+                return jsonify({'error': '客户端不存在'}), 404
+
+            cursor.execute('''
+                INSERT INTO cpu_name_map (client_id, cpu_real_name)
+                VALUES (%s, %s)
+                ON DUPLICATE KEY UPDATE cpu_real_name = VALUES(cpu_real_name)
+            ''', (client_id, cpu_real_name))
+            conn.commit()
+
+        return jsonify({'status': 'success', 'message': 'CPU 真实型号已保存'})
+
+    except Exception as e:
+        logger.error(f'保存 CPU 型号映射失败: {e}')
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/client/<client_id>/cpu-name', methods=['DELETE'])
+@login_required
+def delete_cpu_real_name(client_id):
+    """删除某台机器的 CPU 真实型号映射"""
+    try:
+        with get_db_safe() as conn:
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM cpu_name_map WHERE client_id = %s', (client_id,))
+            conn.commit()
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        logger.error(f'删除 CPU 型号映射失败: {e}')
         return jsonify({'error': str(e)}), 500
 
 
@@ -1443,7 +1731,7 @@ def collect_all_clients():
 @app.route('/api/groups', methods=['GET'])
 @login_required
 def get_groups():
-    """获取所有分组"""
+    """获取所有分组（含全部主机总数与未分组数量，供侧栏「全部/未分组」计数使用）"""
     try:
         with get_db_readonly_safe() as conn:
             cursor = conn.cursor()
@@ -1458,7 +1746,16 @@ def get_groups():
 
             groups = [dict(row) for row in cursor.fetchall()]
 
-        return jsonify({'status': 'success', 'data': groups})
+            # 全部主机总数（含未分组）；未分组的机器不属于任何分组，
+            # 不能用各分组 client_count 求和代替（会漏掉未分组机器）
+            cursor.execute('SELECT COUNT(*) as total FROM clients')
+            total_clients = cursor.fetchone()['total']
+            cursor.execute('SELECT COUNT(*) as cnt FROM clients WHERE group_id IS NULL')
+            ungrouped_count = cursor.fetchone()['cnt']
+
+        return jsonify({'status': 'success', 'data': groups,
+                        'total_clients': total_clients,
+                        'ungrouped_count': ungrouped_count})
 
     except Exception as e:
         logger.error(f'获取分组列表失败: {e}')
@@ -1565,6 +1862,10 @@ def assign_client_to_group(client_id):
         return jsonify({'error': str(e)}), 500
 
 
+# 注意：批量分组接口 PUT /api/clients/batch-group 已在文件后部（export_excel 之后）定义，
+# 此处不再重复定义，避免 Flask 路由 endpoint 冲突导致启动失败。
+
+
 @app.route('/api/clients/<client_id>', methods=['DELETE'])
 @login_required
 def delete_client(client_id):
@@ -1592,7 +1893,16 @@ def export_csv():
         with get_db_readonly_safe() as conn:
             cursor = conn.cursor()
 
-            if group_id:
+            if group_id == 'ungrouped':
+                cursor.execute('''
+                    SELECT c.client_id, c.hostname, c.local_ip, g.name as group_name,
+                           c.last_report, c.created_at
+                    FROM clients c
+                    LEFT JOIN `groups` g ON c.group_id = g.id
+                    WHERE c.group_id IS NULL
+                    ORDER BY c.last_report DESC
+                ''')
+            elif group_id:
                 cursor.execute('''
                     SELECT c.client_id, c.hostname, c.local_ip, g.name as group_name,
                            c.last_report, c.created_at
@@ -1655,7 +1965,15 @@ def export_json():
         with get_db_readonly_safe() as conn:
             cursor = conn.cursor()
 
-            if group_id:
+            if group_id == 'ungrouped':
+                cursor.execute('''
+                    SELECT c.*, g.name as group_name
+                    FROM clients c
+                    LEFT JOIN `groups` g ON c.group_id = g.id
+                    WHERE c.group_id IS NULL
+                    ORDER BY c.last_report DESC
+                ''')
+            elif group_id:
                 cursor.execute('''
                     SELECT c.*, g.name as group_name
                     FROM clients c
@@ -1724,6 +2042,15 @@ def export_excel():
                     WHERE c.client_id IN ({placeholders})
                     ORDER BY c.last_report DESC
                 ''', client_ids)
+            elif group_id == 'ungrouped':
+                cursor.execute('''
+                    SELECT c.client_id, c.hostname, c.local_ip, g.name as group_name,
+                           c.last_report, c.created_at
+                    FROM clients c
+                    LEFT JOIN `groups` g ON c.group_id = g.id
+                    WHERE c.group_id IS NULL
+                    ORDER BY c.last_report DESC
+                ''')
             elif group_id:
                 cursor.execute('''
                     SELECT c.client_id, c.hostname, c.local_ip, g.name as group_name,
@@ -1995,8 +2322,10 @@ def batch_delete_clients():
 @app.route('/api/client/<client_id>/baseline', methods=['GET'])
 @login_required
 def get_client_baseline(client_id):
-    """获取客户端的硬件基准信息"""
+    """获取客户端的硬件基准信息（含手动基准配置与条目 key）"""
     try:
+        from compare_engine import _item_key
+
         with get_db_safe() as conn:
             cursor = conn.cursor()
 
@@ -2011,6 +2340,31 @@ def get_client_baseline(client_id):
             for key in ['cpu_snapshot', 'gpu_snapshot', 'memory_snapshot', 'disk_snapshot']:
                 if baseline_dict.get(key):
                     baseline_dict[key] = json.loads(baseline_dict[key])
+            # 解析手动基准字段
+            baseline_dict['selected_items'] = _parse_json_field(baseline_dict.get('selected_items')) or {}
+            baseline_dict['manual_overrides'] = _parse_json_field(baseline_dict.get('manual_overrides')) or {}
+            baseline_dict['baseline_mode'] = baseline_dict.get('baseline_mode') or 'auto'
+
+        # 为前端构建「条目 + item_key」列表，供勾选/改值使用
+        items = {}
+        try:
+            cpu_items = baseline_dict.get('cpu_snapshot') or []
+            items['cpu'] = [{'key': _item_key(i, 'cpu'), 'data': i} for i in cpu_items if isinstance(i, dict)]
+
+            gpu_items = baseline_dict.get('gpu_snapshot') or []
+            items['gpu'] = [{'key': _item_key(i, 'gpu'), 'data': i} for i in gpu_items if isinstance(i, dict)]
+
+            disk_items = baseline_dict.get('disk_snapshot') or []
+            items['disk'] = [{'key': _item_key(i, 'disk'), 'data': i} for i in disk_items if isinstance(i, dict)]
+
+            mem_snap = baseline_dict.get('memory_snapshot') or {}
+            mem_modules = mem_snap.get('modules', []) if isinstance(mem_snap, dict) else []
+            items['memory'] = [{'key': _item_key(m, 'memory'), 'data': m} for m in mem_modules if isinstance(m, dict)]
+        except Exception as e:
+            logger.warning(f'构建基准条目 key 失败 {client_id}: {e}')
+            items = {}
+
+        baseline_dict['items'] = items
 
         return jsonify({'status': 'success', 'data': baseline_dict})
 
@@ -2022,8 +2376,28 @@ def get_client_baseline(client_id):
 @app.route('/api/client/<client_id>/baseline', methods=['POST'])
 @login_required
 def set_client_baseline(client_id):
-    """手动设置/重置客户端的硬件基准（使用当前最新上报数据）"""
+    """手动设置/重置客户端的硬件基准（使用当前最新上报数据，可选手动勾选+改值）
+
+    body 可选字段：
+        selected_items    dict {hw_type: [item_key, ...]}  勾选纳入对比的条目（空=全量）
+        manual_overrides  dict {hw_type: {item_key: {field: value}}}  手动覆盖字段值
+        baseline_mode     'auto' | 'manual'
+        cpu_snapshot / gpu_snapshot / memory_snapshot / disk_snapshot
+                          可选：直接复用已有基准快照（保证勾选/覆盖的 item_key 与快照一致）。
+                          缺省时用「最新上报数据」重建快照。
+    """
     try:
+        data = request.json or {}
+        selected_items = data.get('selected_items')
+        manual_overrides = data.get('manual_overrides')
+        baseline_mode = data.get('baseline_mode', 'auto')
+
+        # 规范化：手动模式需要 mode 标记；若提供了勾选/覆盖则自动视为 manual
+        if selected_items or manual_overrides:
+            baseline_mode = 'manual'
+        if baseline_mode not in ('auto', 'manual'):
+            baseline_mode = 'auto'
+
         with get_db_safe() as conn:
             cursor = conn.cursor()
 
@@ -2032,42 +2406,137 @@ def set_client_baseline(client_id):
             if not cursor.fetchone():
                 return jsonify({'error': '客户端不存在'}), 404
 
-            # 获取最新的硬件报告
-            cursor.execute('''
-                SELECT report_data FROM hardware_reports
-                WHERE client_id = %s ORDER BY timestamp DESC LIMIT 1
-            ''', (client_id,))
-            report = cursor.fetchone()
+            # 若调用方显式传入了快照（来自 GET /baseline），直接复用，保证 item_key 一致
+            snapshot_keys = ['cpu_snapshot', 'gpu_snapshot', 'memory_snapshot', 'disk_snapshot']
+            if all(k in data and data[k] is not None for k in snapshot_keys):
+                cpu_info = json.dumps(data['cpu_snapshot'], ensure_ascii=False)
+                gpu_info = json.dumps(data['gpu_snapshot'], ensure_ascii=False)
+                mem_info = json.dumps(data['memory_snapshot'], ensure_ascii=False)
+                disk_info = json.dumps(data['disk_snapshot'], ensure_ascii=False)
+            else:
+                # 获取最新的硬件报告
+                cursor.execute('''
+                    SELECT report_data FROM hardware_reports
+                    WHERE client_id = %s ORDER BY timestamp DESC LIMIT 1
+                ''', (client_id,))
+                report = cursor.fetchone()
 
-            if not report:
-                return jsonify({'error': '该客户端尚未上报任何硬件数据'}), 400
+                if not report:
+                    return jsonify({'error': '该客户端尚未上报任何硬件数据'}), 400
 
-            hardware_info = json.loads(report['report_data'])
+                hardware_info = json.loads(report['report_data'])
 
-            # 提取关键指标
-            cpu_info = json.dumps(hardware_info.get('cpu', []), ensure_ascii=False) if hardware_info.get('cpu') else ''
-            mem_info = json.dumps(hardware_info.get('memory', {}), ensure_ascii=False) if hardware_info.get('memory') else ''
-            disk_info = json.dumps(hardware_info.get('disk', []), ensure_ascii=False) if hardware_info.get('disk') else ''
-            gpu_info = json.dumps(hardware_info.get('gpu', []), ensure_ascii=False) if hardware_info.get('gpu') else ''
+                # 提取关键指标
+                cpu_info = json.dumps(hardware_info.get('cpu', []), ensure_ascii=False) if hardware_info.get('cpu') else ''
+                mem_info = json.dumps(hardware_info.get('memory', {}), ensure_ascii=False) if hardware_info.get('memory') else ''
+                disk_info = json.dumps(hardware_info.get('disk', []), ensure_ascii=False) if hardware_info.get('disk') else ''
+                gpu_info = json.dumps(hardware_info.get('gpu', []), ensure_ascii=False) if hardware_info.get('gpu') else ''
+
+            sel_json = json.dumps(selected_items, ensure_ascii=False) if selected_items else None
+            ovr_json = json.dumps(manual_overrides, ensure_ascii=False) if manual_overrides else None
 
             # 插入或更新基准
             cursor.execute('''
-                INSERT INTO client_baselines (client_id, cpu_snapshot, gpu_snapshot, memory_snapshot, disk_snapshot)
-                VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO client_baselines
+                    (client_id, cpu_snapshot, gpu_snapshot, memory_snapshot, disk_snapshot,
+                     selected_items, manual_overrides, baseline_mode)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE
                     cpu_snapshot = VALUES(cpu_snapshot),
                     gpu_snapshot = VALUES(gpu_snapshot),
                     memory_snapshot = VALUES(memory_snapshot),
                     disk_snapshot = VALUES(disk_snapshot),
+                    selected_items = VALUES(selected_items),
+                    manual_overrides = VALUES(manual_overrides),
+                    baseline_mode = VALUES(baseline_mode),
                     baseline_timestamp = CURRENT_TIMESTAMP
-            ''', (client_id, cpu_info, gpu_info, mem_info, disk_info))
+            ''', (client_id, cpu_info, gpu_info, mem_info, disk_info, sel_json, ovr_json, baseline_mode))
 
             conn.commit()
 
-        return jsonify({'status': 'success', 'message': '基准已更新'})
+        return jsonify({'status': 'success', 'message': '基准已更新', 'baseline_mode': baseline_mode})
 
     except Exception as e:
         logger.error(f'设置客户端基准失败: {e}')
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/client/<client_id>/baseline/sync', methods=['POST'])
+@login_required
+def sync_client_baseline(client_id):
+    """把指定客户端的基准（含手动配置）同步到其他设备。
+
+    body:
+        target_client_ids  list  手动勾选的目标客户端 ID 列表
+        group_id           int   同步到整个分组（与 target_client_ids 二选一或可同时）
+    """
+    try:
+        data = request.json or {}
+        target_client_ids = data.get('target_client_ids') or []
+        group_id = data.get('group_id')
+
+        with get_db_safe() as conn:
+            cursor = conn.cursor()
+
+            # 读取源基准
+            cursor.execute('SELECT * FROM client_baselines WHERE client_id = %s', (client_id,))
+            src = cursor.fetchone()
+            if not src:
+                return jsonify({'error': '源客户端尚未建立基准'}), 400
+
+            # 汇总目标客户端 ID
+            targets = set(target_client_ids)
+            if group_id:
+                cursor.execute('SELECT client_id FROM clients WHERE group_id = %s', (group_id,))
+                for row in cursor.fetchall():
+                    targets.add(row['client_id'])
+            targets.discard(client_id)  # 排除自身
+
+            if not targets:
+                return jsonify({'error': '未指定任何目标设备'}), 400
+
+            src_dict = dict(src)
+            target_list = sorted(targets)
+            synced = len(target_list)
+
+            # 单条批量 upsert：多行 VALUES，一次往返完成（替代逐台循环，大幅提速）
+            values = []
+            params = []
+            for tid in target_list:
+                values.append('(%s, %s, %s, %s, %s, %s, %s, %s)')
+                params.extend([
+                    tid,
+                    src_dict.get('cpu_snapshot'),
+                    src_dict.get('gpu_snapshot'),
+                    src_dict.get('memory_snapshot'),
+                    src_dict.get('disk_snapshot'),
+                    src_dict.get('selected_items'),
+                    src_dict.get('manual_overrides'),
+                    src_dict.get('baseline_mode') or 'auto',
+                ])
+
+            cursor.execute(f'''
+                INSERT INTO client_baselines
+                    (client_id, cpu_snapshot, gpu_snapshot, memory_snapshot, disk_snapshot,
+                     selected_items, manual_overrides, baseline_mode)
+                VALUES {','.join(values)}
+                ON DUPLICATE KEY UPDATE
+                    cpu_snapshot = VALUES(cpu_snapshot),
+                    gpu_snapshot = VALUES(gpu_snapshot),
+                    memory_snapshot = VALUES(memory_snapshot),
+                    disk_snapshot = VALUES(disk_snapshot),
+                    selected_items = VALUES(selected_items),
+                    manual_overrides = VALUES(manual_overrides),
+                    baseline_mode = VALUES(baseline_mode),
+                    baseline_timestamp = CURRENT_TIMESTAMP
+            ''', params)
+
+            conn.commit()
+
+        return jsonify({'status': 'success', 'message': f'已同步到 {synced} 台设备', 'synced': synced})
+
+    except Exception as e:
+        logger.error(f'同步基准失败: {e}')
         return jsonify({'error': str(e)}), 500
 
 
@@ -2113,11 +2582,23 @@ def get_client_alerts(client_id):
 @app.route('/api/alerts', methods=['GET'])
 @login_required
 def get_all_alerts():
-    """获取所有告警记录（支持分页和过滤）"""
+    """获取所有告警记录（支持分页、过滤和关键词搜索）"""
     try:
         page = int(request.args.get('page', 1))
         per_page = int(request.args.get('per_page', 20))
         resolved = request.args.get('resolved')
+        # 关键词搜索（主机名/client_id/IP/告警详情），与客户端列表搜索同策略：
+        # 带搜索时不走缓存，避免关键词组合污染缓存
+        search = (request.args.get('search') or '').strip()
+
+        if not search:
+            # 短缓存（5s）：告警列表是高频读取热路径，命中直接返回，绕过 DB 查询
+            cache_key = f'hwmon:alerts:{page}:{per_page}:{resolved or "all"}'
+            cached = get_cache(cache_key)
+            if cached:
+                return jsonify(cached)
+        else:
+            cache_key = None
 
         with get_db_safe() as conn:
             cursor = conn.cursor()
@@ -2145,10 +2626,23 @@ def get_all_alerts():
                 query += ' AND a.resolved = %s'
                 params.append(1 if resolved == 'true' else 0)
 
+            # 关键词模糊搜索：主机名 / client_id / IP / 告警详情
+            if search:
+                like = f'%{search}%'
+                query += ''' AND (a.client_id LIKE %s OR c.hostname LIKE %s
+                            OR c.local_ip LIKE %s OR a.alert_detail LIKE %s
+                            OR a.alert_type LIKE %s)'''
+                params.extend([like, like, like, like, like])
+
             # 获取总数
             count_query = query.replace('SELECT a.*, c.hostname, c.local_ip', 'SELECT COUNT(*) as total')
             cursor.execute(count_query, params)
             total = cursor.fetchone()['total']
+
+            # 准确统计「未解决告警」总数（供前端告警中心数字使用，
+            # 避免 per_page 截断导致列表长度不准）
+            cursor.execute('SELECT COUNT(*) as cnt FROM alert_records WHERE resolved = 0')
+            unresolved_total = cursor.fetchone()['cnt']
 
             # 分页查询
             query += ' ORDER BY a.created_at DESC LIMIT %s OFFSET %s'
@@ -2162,16 +2656,21 @@ def get_all_alerts():
                 if alert.get('alert_detail'):
                     alert['alert_detail'] = json.loads(alert['alert_detail'])
 
-        return jsonify({
+        response_data = {
             'status': 'success',
             'data': alerts,
+            'unresolved_total': unresolved_total,
             'pagination': {
                 'page': page,
                 'per_page': per_page,
                 'total': total,
                 'pages': (total + per_page - 1) // per_page
             }
-        })
+        }
+        # 带搜索时 cache_key 为 None，不写缓存
+        if cache_key:
+            set_cache(cache_key, response_data, ttl=5)
+        return jsonify(response_data)
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -2248,6 +2747,28 @@ def batch_resolve_alerts():
 
     except Exception as e:
         logger.error(f'批量标记告警失败: {e}')
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/alerts/resolve-all', methods=['PUT'])
+@login_required
+def resolve_all_alerts():
+    """一键标记所有未解决告警为已解决"""
+    try:
+        with get_db_safe() as conn:
+            cursor = conn.cursor()
+            cursor.execute('UPDATE alert_records SET resolved = 1 WHERE resolved = 0')
+            affected = cursor.rowcount
+            conn.commit()
+
+        return jsonify({
+            'status': 'success',
+            'affected': affected,
+            'message': f'已解决 {affected} 条未解决告警'
+        })
+
+    except Exception as e:
+        logger.error(f'一键解决告警失败: {e}')
         return jsonify({'error': str(e)}), 500
 
 
@@ -2554,8 +3075,8 @@ def get_dashboard():
             }
         }
 
-        # 写入缓存（30秒TTL）
-        set_cache(cache_key, response_data, ttl=30)
+        # 写入缓存（5秒TTL：让侧栏告警角标更实时）
+        set_cache(cache_key, response_data, ttl=5)
 
         return jsonify(response_data)
     except Exception as e:
@@ -2567,6 +3088,47 @@ def get_dashboard():
 # 进程告警 API
 # =================================================================
 
+def _async_ai_analyze(alert_id, client_id, alert_data):
+    """异步 AI 分析（在线程池中执行，不阻塞主流程）
+
+    修复说明：此前该函数从未定义，导致 /api/process-alert 提交任务时
+    抛出 NameError（异常被线程池吞掉），AI 自动研判完全失效。
+    现参照 tasks.py 中的 async_ai_analyze 逻辑补齐。
+    """
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+
+        # 检查是否在 AI 监控列表
+        cursor.execute('SELECT id FROM ai_monitored_hosts WHERE client_id = %s AND enabled = 1', (client_id,))
+        if not cursor.fetchone():
+            conn.close()
+            return
+
+        # 获取 AI 配置
+        cursor.execute('SELECT * FROM ai_config WHERE id = 1')
+        ai_cfg = cursor.fetchone()
+        if not ai_cfg or not ai_cfg.get('enabled') or not ai_cfg.get('auto_analyze'):
+            conn.close()
+            return
+
+        alert_json = json.loads(alert_data) if isinstance(alert_data, str) else alert_data
+        result = analyze_process_alert(alert_json, dict(ai_cfg))
+
+        if result:
+            cursor.execute('''
+                UPDATE process_alert_records
+                SET ai_analyzed = 1, ai_result = %s
+                WHERE id = %s
+            ''', (json.dumps(result, ensure_ascii=False), alert_id))
+            conn.commit()
+
+        conn.close()
+
+    except Exception as e:
+        logger.warning(f'AI 异步分析失败 (alert_id={alert_id}): {e}')
+
+
 @app.route('/api/process-alert', methods=['POST'])
 def receive_process_alert():
     """接收客户端进程告警（同步处理）"""
@@ -2575,6 +3137,9 @@ def receive_process_alert():
         client_id = data.get('client_id')
         hostname = data.get('hostname', '')
         local_ip = data.get('local_ip', '')
+        # APIPA/无效地址兜底：169.254.x.x（DHCP 失败自动地址）、回环等改用真实来源 IP
+        if not local_ip or local_ip.startswith('169.254.') or local_ip in ('127.0.0.1', '0.0.0.0', '::1'):
+            local_ip = request.remote_addr or ''
         alerts = data.get('alerts', [])
         system_summary = data.get('system_summary', {})
 
@@ -2613,8 +3178,8 @@ def receive_process_alert():
         alert_id = cursor.lastrowid
         conn.commit()
 
-        # 异步 AI 分析
-        hw_detection_executor.submit(
+        # 异步 AI 分析（独立线程池，避免 25s+ 的 AI 调用阻塞硬件检测线程）
+        ai_executor.submit(
             _async_ai_analyze,
             alert_id, client_id, alert_data
         )
@@ -2762,6 +3327,109 @@ def reanalyze_process_alert(alert_id):
         return jsonify({'status': 'success', 'result': result})
 
     except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# =================================================================
+# AI 研判结果 API（独立查看 / 删除）
+# =================================================================
+
+@app.route('/api/ai/results', methods=['GET'])
+@login_required
+def get_ai_results():
+    """获取所有已完成的 AI 研判结果（ai_analyzed=1 且存在 ai_result）"""
+    try:
+        page = int(request.args.get('page', 1))
+        per_page = int(request.args.get('per_page', 20))
+
+        with get_db_readonly_safe() as conn:
+            cursor = conn.cursor()
+
+            cursor.execute(
+                'SELECT COUNT(*) as total FROM process_alert_records '
+                'WHERE ai_analyzed = 1 AND ai_result IS NOT NULL AND ai_result != ""'
+            )
+            total = cursor.fetchone()['total']
+
+            cursor.execute('''
+                SELECT id, client_id, hostname, local_ip, alert_data, alert_count, ai_result, created_at
+                FROM process_alert_records
+                WHERE ai_analyzed = 1 AND ai_result IS NOT NULL AND ai_result != ''
+                ORDER BY created_at DESC
+                LIMIT %s OFFSET %s
+            ''', (per_page, (page - 1) * per_page))
+
+            results = []
+            for row in cursor.fetchall():
+                r = dict(row)
+                if r.get('alert_data'):
+                    r['alert_data'] = json.loads(r['alert_data'])
+                if r.get('ai_result'):
+                    r['ai_result'] = json.loads(r['ai_result'])
+                results.append(r)
+
+        return jsonify({
+            'status': 'success',
+            'data': results,
+            'pagination': {
+                'page': page,
+                'per_page': per_page,
+                'total': total,
+                'pages': (total + per_page - 1) // per_page
+            }
+        })
+
+    except Exception as e:
+        logger.error(f'获取 AI 研判结果失败: {e}')
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/ai/results/<int:alert_id>', methods=['DELETE'])
+@login_required
+def delete_ai_result(alert_id):
+    """删除单条 AI 研判结果（清空 ai_result 并把 ai_analyzed 置 0，保留告警记录可重新分析）"""
+    try:
+        with get_db_safe() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'UPDATE process_alert_records SET ai_analyzed = 0, ai_result = NULL WHERE id = %s',
+                (alert_id,)
+            )
+            if cursor.rowcount == 0:
+                return jsonify({'error': '记录不存在'}), 404
+            conn.commit()
+        return jsonify({'status': 'success', 'message': '已删除该 AI 研判结果'})
+    except Exception as e:
+        logger.error(f'删除 AI 研判结果失败: {e}')
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/ai/results/clear', methods=['POST'])
+@login_required
+def clear_ai_results():
+    """清空所有 AI 研判结果（可选按 client_id 过滤）"""
+    try:
+        data = request.json or {}
+        client_id = data.get('client_id')
+
+        with get_db_safe() as conn:
+            cursor = conn.cursor()
+            if client_id:
+                cursor.execute(
+                    'UPDATE process_alert_records SET ai_analyzed = 0, ai_result = NULL '
+                    'WHERE client_id = %s AND ai_analyzed = 1',
+                    (client_id,)
+                )
+            else:
+                cursor.execute(
+                    'UPDATE process_alert_records SET ai_analyzed = 0, ai_result = NULL '
+                    'WHERE ai_analyzed = 1'
+                )
+            affected = cursor.rowcount
+            conn.commit()
+        return jsonify({'status': 'success', 'message': f'已清空 {affected} 条 AI 研判结果', 'affected': affected})
+    except Exception as e:
+        logger.error(f'清空 AI 研判结果失败: {e}')
         return jsonify({'error': str(e)}), 500
 
 
@@ -3212,12 +3880,33 @@ def cleanup_old_records():
         try:
             with get_db_safe() as conn:
                 cursor = conn.cursor()
-                cursor.execute('SELECT client_id, COUNT(*) as cnt FROM hardware_history GROUP BY client_id HAVING COUNT(*) > 10')
-                for row in cursor.fetchall():
+
+                # 从 clients 表拿 client_id（约 200 行，秒级），避免 GROUP BY 全索引扫描
+                # （20 万行 LONGTEXT 大表上 GROUP BY 全索引扫描实测 >224s，点查点删则秒级）
+                cursor.execute('SELECT client_id FROM clients')
+                client_ids = [r['client_id'] for r in cursor.fetchall()]
+
+                # 清理硬件历史表：每客户端保留最近 10 条（点查 + 点删，走 idx_client_id 索引）
+                for cid in client_ids:
                     try:
-                        cursor.execute('DELETE FROM hardware_history WHERE id NOT IN (SELECT id FROM (SELECT id FROM hardware_history WHERE client_id=%s ORDER BY timestamp DESC LIMIT 10) AS t) AND client_id=%s', (row['client_id'], row['client_id']))
+                        cursor.execute('SELECT id FROM hardware_history WHERE client_id=%s ORDER BY id DESC LIMIT 9,1', (cid,))
+                        row = cursor.fetchone()
+                        if row:
+                            cursor.execute('DELETE FROM hardware_history WHERE client_id=%s AND id < %s', (cid, row['id']))
                     except Exception:
                         pass
+
+                # 清理上报明细表：每客户端保留最近 10 条
+                # （全项目对 hardware_reports 只查最新一条，历史由 hardware_history 承担，故仅保留少量冗余兜底）
+                for cid in client_ids:
+                    try:
+                        cursor.execute('SELECT id FROM hardware_reports WHERE client_id=%s ORDER BY id DESC LIMIT 9,1', (cid,))
+                        row = cursor.fetchone()
+                        if row:
+                            cursor.execute('DELETE FROM hardware_reports WHERE client_id=%s AND id < %s', (cid, row['id']))
+                    except Exception:
+                        pass
+
                 conn.commit()
         except Exception as e:
             logger.warning(f'清理旧记录失败: {e}')
@@ -3256,7 +3945,7 @@ def create_app():
 if __name__ == '__main__':
     create_app()
     logger.info("=" * 50)
-    logger.info("HwMon Server v5.0.0 - http://localhost:5000")
+    logger.info("HwMon Server v5.0.1 - http://localhost:5000")
     logger.info("=" * 50)
     try:
         from waitress import serve

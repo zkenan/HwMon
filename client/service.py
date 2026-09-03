@@ -1,5 +1,5 @@
 """
-HwMon Client v5.0.0
+HwMon Client v5.0.1
 Windows 服务 + 交互菜单 + 进程监控
 """
 
@@ -318,7 +318,7 @@ def interactive_menu():
     while True:
         print()
         print("=" * 50)
-        print("  HwMon Client v5.0.0")
+        print("  HwMon Client v5.0.1")
         print("=" * 50)
         print(f"  服务端: {config.get_server_url()}")
         print(f"  上报间隔: {config.get_report_interval()}秒")

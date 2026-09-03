@@ -1,27 +1,32 @@
-version: '3.8'
-
 services:
-  # Flask 应用
+  # HwMon 服务端（Flask 应用）
+  # 数据库与 Redis 使用外部实例，通过环境变量手动指定（见 .env 文件）
   hwmon:
     build:
       context: ./server
       dockerfile: Dockerfile
+    image: hwmon-server:${HW_IMAGE_TAG:-v5.0.1}
     container_name: hwmon-server
     restart: unless-stopped
     ports:
-      - "5000:5000"
+      - "${SERVER_PORT:-5000}:5000"
     environment:
-      - DB_HOST=192.168.20.27
-      - DB_PORT=3306
-      - DB_USER=hwmon
-      - DB_PASSWORD=hwmon
-      - DB_NAME=hwmon
-      - REDIS_HOST=192.168.20.27
-      - REDIS_PORT=6379
-      - REDIS_PASSWORD=redis_S5RBDd
-      - LOGIN_USERNAME=admin
-      - LOGIN_PASSWORD=admin123
-      - SECRET_KEY=hwmon-secret-key-2026
+      # === 数据库（生产环境手动指定专用数据库）===
+      - DB_HOST=${DB_HOST}
+      - DB_PORT=${DB_PORT:-3306}
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_NAME=${DB_NAME}
+      - DB_CHARSET=${DB_CHARSET:-utf8mb4}
+      # === Redis（生产环境手动指定专用 Redis）===
+      - REDIS_HOST=${REDIS_HOST}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - REDIS_DB=${REDIS_DB:-0}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      # === 登录与安全 ===
+      - LOGIN_USERNAME=${LOGIN_USERNAME:-admin}
+      - LOGIN_PASSWORD=${LOGIN_PASSWORD:-admin123}
+      - SECRET_KEY=${SECRET_KEY}
     networks:
       - hwmon-network
 

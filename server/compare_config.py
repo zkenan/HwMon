@@ -14,9 +14,9 @@
 # low: 低重要性维度，变化忽略
 HARDWARE_COMPARE_CONFIG = {
     "cpu": {
-        "high": ["name", "cores"],                    # 型号、核心数
+        "high": ["cores"],                             # 核心数（真换装/撤走判定）
         "medium": [],                                  # 无
-        "low": ["max_clock_speed", "manufacturer"]    # 主频、制造商
+        "low": ["name", "max_clock_speed", "manufacturer"]  # 型号名、主频、制造商（name 因命名格式差异降级为忽略）
     },
     "gpu": {
         "high": ["name"],                              # 型号名称
